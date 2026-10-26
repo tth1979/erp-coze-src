@@ -54,6 +54,8 @@ export interface SalesOrderView {
   reject_reason: string | null;
   confirmed_at: string | null;
   cancelled_at: string | null;
+  /** 发货仓库（可空，空=默认仓 WH01） */
+  warehouse_id: string | null;
   created_at: string;
   updated_at: string;
   items?: SalesOrderItemView[];
@@ -79,6 +81,8 @@ export const orderUpsertSchema = z.object({
     .regex(/^\d{4}-\d{2}-\d{2}$/, '日期格式应为 YYYY-MM-DD')
     .optional(),
   remark: z.string().max(500, '备注不能超过 500 字').optional(),
+  /** 发货仓库（可空，空=默认仓 WH01） */
+  warehouse_id: uuid.nullish(),
   items: z.array(itemSchema).min(1, '至少需要一行明细').max(200, '明细行过多'),
 });
 export type OrderUpsertInput = z.infer<typeof orderUpsertSchema>;
@@ -126,6 +130,7 @@ function serialize(
     reject_reason: row.reject_reason ?? null,
     confirmed_at: row.confirmed_at ? new Date(row.confirmed_at).toISOString() : null,
     cancelled_at: row.cancelled_at ? new Date(row.cancelled_at).toISOString() : null,
+    warehouse_id: row.warehouse_id ?? null,
     created_at: new Date(row.created_at).toISOString(),
     updated_at: new Date(row.updated_at).toISOString(),
     items: extra.items,
@@ -352,6 +357,7 @@ export async function createOrder(input: OrderUpsertInput, operatorId: string): 
         order_date: orderDate,
         total_amount: total,
         remark,
+        warehouse_id: input.warehouse_id ?? null,
         created_by: operatorId,
         status: 'draft',
       })
@@ -390,6 +396,7 @@ export async function updateOrder(id: string, input: OrderUpsertInput): Promise<
       customer_id: input.customer_id,
       order_date: input.order_date ?? existing.order_date,
       remark: emptyToNull(input.remark),
+      warehouse_id: input.warehouse_id ?? existing.warehouse_id,
       total_amount: total,
       updated_at: new Date().toISOString(),
     })

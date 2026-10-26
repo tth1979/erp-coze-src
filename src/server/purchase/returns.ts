@@ -47,6 +47,8 @@ export interface ReturnView {
   current_step: number;
   reject_reason: string | null;
   remark: string | null;
+  /** 出库仓库（可空，空=默认仓 WH01） */
+  warehouse_id: string | null;
   created_by_name: string | null;
   created_at: string;
   items?: ReturnItemView[];
@@ -75,6 +77,8 @@ export const returnCreateSchema = z.object({
     .optional(),
   reason: z.string().max(500, '退货原因不能超过 500 字').optional(),
   remark: z.string().max(500, '备注不能超过 500 字').optional(),
+  /** 出库仓库（可空，空=默认仓 WH01） */
+  warehouse_id: uuid.nullish(),
   items: z.array(itemSchema).min(1, '至少需要一行明细').max(200, '明细行过多'),
 });
 export type ReturnCreateInput = z.infer<typeof returnCreateSchema>;
@@ -138,6 +142,7 @@ function serialize(row: PoReturn, extra: Partial<ReturnView> = {}): ReturnView {
     current_step: row.current_step,
     reject_reason: row.reject_reason,
     remark: row.remark,
+    warehouse_id: row.warehouse_id ?? null,
     created_by_name: extra.created_by_name ?? null,
     created_at: new Date(row.created_at).toISOString(),
     items: extra.items,
@@ -325,6 +330,7 @@ export async function createReturn(input: ReturnCreateInput, operatorId: string)
         total_amount: total,
         return_date: input.return_date ?? new Date().toISOString().slice(0, 10),
         remark: emptyToNull(input.remark),
+        warehouse_id: input.warehouse_id ?? null,
         created_by: operatorId,
       })
       .select('*')

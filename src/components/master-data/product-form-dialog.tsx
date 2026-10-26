@@ -45,6 +45,7 @@ const EMPTY = {
   area_per_box: '',
   reference_purchase_price: '',
   reference_sale_price: '',
+  safety_stock: '',
   status: 'active',
   remark: '',
 };
@@ -80,6 +81,7 @@ export function ProductFormDialog({ open, onOpenChange, initial, onSaved }: Prod
         area_per_box: initial.area_per_box ?? '',
         reference_purchase_price: initial.reference_purchase_price ?? '',
         reference_sale_price: initial.reference_sale_price ?? '',
+        safety_stock: initial.safety_stock === null || initial.safety_stock === undefined ? '' : String(initial.safety_stock),
         status: initial.status,
         remark: initial.remark ?? '',
       });
@@ -102,6 +104,7 @@ export function ProductFormDialog({ open, onOpenChange, initial, onSaved }: Prod
         area_per_box: toNumber(form.area_per_box),
         reference_purchase_price: toNumber(form.reference_purchase_price),
         reference_sale_price: toNumber(form.reference_sale_price),
+        safety_stock: toNumber(form.safety_stock),
       };
       const body = JSON.stringify(payload);
       if (initial) {
@@ -214,6 +217,10 @@ export function ProductFormDialog({ open, onOpenChange, initial, onSaved }: Prod
             <div className="space-y-2">
               <Label htmlFor="p-sp">参考售价（元）</Label>
               <Input id="p-sp" type="number" min={0} step="0.01" value={form.reference_sale_price} onChange={(e) => set('reference_sale_price')(e.target.value)} />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="p-ss">安全库存</Label>
+              <Input id="p-ss" type="number" min={0} step="any" value={form.safety_stock} onChange={(e) => set('safety_stock')(e.target.value)} placeholder="低于该值触发预警" />
             </div>
           </div>
           <div className="space-y-2">

@@ -4,6 +4,7 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { ArrowDownCircle, ArrowUpCircle, ListOrdered, Search, SlidersHorizontal } from 'lucide-react';
 import { PaginationControls } from '@/components/master-data/pagination-controls';
+import { WarehouseFilterSelect } from '@/components/inventory/warehouse-select';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
@@ -35,6 +36,13 @@ const TYPE_OPTIONS = [
 const SOURCE_LABEL: Record<string, string> = {
   purchase_in: '采购到货',
   sales_out: '销售发货',
+  purchase_return: '采购退货',
+  sales_return: '销售退货',
+  receipt_reversal: '暂估冲回',
+  transfer_out: '调拨调出',
+  transfer_in: '调拨调入',
+  check_in: '盘盈入库',
+  check_out: '盘亏出库',
   manual: '手工调整',
 };
 
@@ -69,8 +77,9 @@ function MovementSign({ type, quantity }: { type: string; quantity: number }) {
 
 export default function MovementsPage() {
   const [type, setType] = useState('');
+  const [warehouseId, setWarehouseId] = useState('');
   const [searchInput, setSearchInput] = useState('');
-  const list = usePagedList<StockMovement>('/api/inv/movements', 10, { type });
+  const list = usePagedList<StockMovement>('/api/inv/movements', 10, { type, warehouse_id: warehouseId });
 
   function onTypeChange(value: string) {
     list.setPage(1);
@@ -113,6 +122,13 @@ export default function MovementsPage() {
             ))}
           </SelectContent>
         </Select>
+        <WarehouseFilterSelect
+          value={warehouseId}
+          onChange={(v) => {
+            list.setPage(1);
+            setWarehouseId(v);
+          }}
+        />
         <Button variant="outline" size="sm" onClick={() => list.setKeyword(searchInput)} aria-label="搜索">
           <Search className="h-4 w-4 sm:mr-1" />
           <span className="hidden sm:inline">搜索</span>
@@ -150,6 +166,16 @@ export default function MovementsPage() {
                     <dt className="text-stone-500">来源</dt>
                     <dd className="mt-0.5 text-stone-800">{SOURCE_LABEL[mv.source] ?? mv.source}</dd>
                   </div>
+                  {mv.batch_no ? (
+                    <div>
+                      <dt className="text-stone-500">批次</dt>
+                      <dd className="mt-0.5 font-mono text-stone-800">{mv.batch_no}</dd>
+                    </div>
+                  ) : null}
+                  <div>
+                    <dt className="text-stone-500">仓库</dt>
+                    <dd className="mt-0.5 text-stone-800">{mv.warehouse_name ?? '—'}</dd>
+                  </div>
                   <div>
                     <dt className="text-stone-500">变动后余额</dt>
                     <dd className="mt-0.5 tabular-nums text-stone-800">
@@ -179,9 +205,10 @@ export default function MovementsPage() {
                 <TableRow>
                   <TableHead>时间</TableHead>
                   <TableHead>商品</TableHead>
-                  <TableHead>类型</TableHead>
-                  <TableHead className="text-right">变动数量</TableHead>
+                  <TableHead>仓库</TableHead>
+                  <TableHead>变动数量</TableHead>
                   <TableHead className="text-right">变动后余额</TableHead>
+                  <TableHead>批次</TableHead>
                   <TableHead>来源</TableHead>
                   <TableHead>关联单号</TableHead>
                   <TableHead>操作人</TableHead>
@@ -197,6 +224,7 @@ export default function MovementsPage() {
                       <div className="text-sm text-stone-800">{mv.product_name}</div>
                       <div className="font-mono text-xs text-stone-500">{mv.sku_code ?? ''}</div>
                     </TableCell>
+                    <TableCell className="text-stone-600">{mv.warehouse_name ?? '—'}</TableCell>
                     <TableCell>
                       <MovementSign type={mv.type} quantity={Number(mv.quantity)} />
                     </TableCell>
@@ -204,6 +232,7 @@ export default function MovementsPage() {
                       {formatQty(Number(mv.balance))}
                       <span className="ml-0.5 text-xs text-stone-400">{mv.unit ?? ''}</span>
                     </TableCell>
+                    <TableCell className="font-mono text-xs text-stone-600">{mv.batch_no ?? '—'}</TableCell>
                     <TableCell className="text-stone-600">{SOURCE_LABEL[mv.source] ?? mv.source}</TableCell>
                     <TableCell className="font-mono text-xs text-stone-600">{mv.ref_no ?? '—'}</TableCell>
                     <TableCell className="text-stone-600">{mv.created_by_name ?? '—'}</TableCell>

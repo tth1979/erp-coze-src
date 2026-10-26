@@ -45,6 +45,8 @@ export interface ShipmentView {
   approved_at: string | null;
   reject_reason: string | null;
   remark: string | null;
+  /** 发货仓库（可空，空=默认仓 WH01） */
+  warehouse_id: string | null;
   created_by_name: string | null;
   created_at: string;
   items?: ShipmentItemView[];
@@ -61,6 +63,8 @@ const itemSchema = z.object({
 export const shipmentCreateSchema = z.object({
   order_id: uuid,
   ship_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, '日期格式应为 YYYY-MM-DD').optional(),
+  /** 发货仓库（可空，默认取订单仓，再兜底默认仓 WH01） */
+  warehouse_id: uuid.nullish(),
   remark: z.string().max(500, '备注不能超过 500 字').optional(),
   items: z.array(itemSchema).min(1, '至少需要一行明细').max(200, '明细行过多'),
 });
@@ -114,6 +118,7 @@ function serialize(
     approved_at: row.approved_at ? new Date(row.approved_at).toISOString() : null,
     reject_reason: row.reject_reason ?? null,
     remark: row.remark,
+    warehouse_id: row.warehouse_id ?? null,
     created_by_name: extra.creatorName ?? null,
     created_at: new Date(row.created_at).toISOString(),
     items: extra.items,
@@ -279,6 +284,7 @@ export async function createShipment(input: ShipmentCreateInput, user: SysUser):
       ship_date: input.ship_date ?? new Date().toISOString().slice(0, 10),
       total_amount: total,
       remark: emptyToNull(input.remark),
+      warehouse_id: input.warehouse_id ?? (order.warehouse_id as string | null) ?? null,
       created_by: user.id,
       status: 'draft',
     })

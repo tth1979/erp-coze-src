@@ -3,6 +3,7 @@ import { getSupabaseClient } from '@/storage/database/supabase-client';
 import { requireAuth, requirePermission } from '@/server/auth/guard';
 import { handleError, ok } from '@/server/http';
 import { financeSummary } from '@/server/finance/payments';
+import { countAlerts } from '@/server/inventory/alerts';
 
 async function countRows(table: string, status?: string): Promise<number> {
   const client = getSupabaseClient();
@@ -42,6 +43,7 @@ export async function GET(request: NextRequest) {
       stockKinds,
       stockOut,
       finance,
+      alertCount,
     ] = await Promise.all([
       countRows('md_customers'),
       countRows('md_suppliers'),
@@ -58,6 +60,7 @@ export async function GET(request: NextRequest) {
       countStock(),
       countStock('out'),
       financeSummary(),
+      countAlerts(),
     ]);
     return ok({
       customers,
@@ -65,7 +68,7 @@ export async function GET(request: NextRequest) {
       products,
       purchase_orders: { total: poTotal, draft: poDraft, pending: poPending, approved: poApproved },
       sales_orders: { total: soTotal, draft: soDraft, pending: soPending, approved: soApproved, shipped: soShipped },
-      inventory: { tracked_kinds: stockKinds, out_of_stock: stockOut },
+      inventory: { tracked_kinds: stockKinds, out_of_stock: stockOut, alerts: alertCount },
       finance,
     });
   } catch (error) {

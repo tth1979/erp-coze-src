@@ -29,6 +29,8 @@ const API_BASE: Record<string, string> = {
   sales_order: '/api/so/orders',
   shipment: '/api/so/shipments',
   sales_return: '/api/so/returns',
+  transfer: '/api/inv/transfers',
+  check: '/api/inv/checks',
 };
 
 function formatTime(value: string | null): string {
@@ -48,7 +50,7 @@ export function ApprovalPanel({
   canApprove,
   onChanged,
 }: {
-  docType: 'requisition' | 'order' | 'receipt' | 'return' | 'sales_order' | 'shipment' | 'sales_return';
+  docType: 'requisition' | 'order' | 'receipt' | 'return' | 'sales_order' | 'shipment' | 'sales_return' | 'transfer' | 'check';
   docId: string;
   status: string;
   steps: ApprovalStep[];

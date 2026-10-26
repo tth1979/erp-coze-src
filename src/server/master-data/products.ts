@@ -23,6 +23,8 @@ export interface ProductInput {
   area_per_box?: number | null;
   reference_purchase_price?: number | null;
   reference_sale_price?: number | null;
+  /** 安全库存阈值（库存预警用；null/0 = 不预警） */
+  safety_stock?: number | null;
   status?: string;
   remark?: string | null;
 }
@@ -45,6 +47,7 @@ function normalize(input: ProductInput) {
     area_per_box: input.area_per_box ?? null,
     reference_purchase_price: input.reference_purchase_price ?? null,
     reference_sale_price: input.reference_sale_price ?? null,
+    safety_stock: input.safety_stock ?? null,
     status: input.status ?? 'active',
     remark: emptyToNull(input.remark),
   };

@@ -46,6 +46,8 @@ export interface ReturnView {
   approved_at: string | null;
   reject_reason: string | null;
   remark: string | null;
+  /** 退回入库仓库（可空，空=默认仓 WH01） */
+  warehouse_id: string | null;
   created_by_name: string | null;
   created_at: string;
   items?: ReturnItemView[];
@@ -65,6 +67,8 @@ export const returnCreateSchema = z.object({
   return_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, '日期格式应为 YYYY-MM-DD').optional(),
   reason: z.string().max(500, '退货原因不能超过 500 字').optional(),
   remark: z.string().max(500, '备注不能超过 500 字').optional(),
+  /** 退回入库仓库（可空，空=默认仓 WH01） */
+  warehouse_id: uuid.nullish(),
   items: z.array(itemSchema).min(1, '至少需要一行明细').max(200, '明细行过多'),
 });
 export type ReturnCreateInput = z.infer<typeof returnCreateSchema>;
@@ -120,6 +124,7 @@ function serialize(
     approved_at: row.approved_at ? new Date(row.approved_at).toISOString() : null,
     reject_reason: row.reject_reason ?? null,
     remark: row.remark,
+    warehouse_id: row.warehouse_id ?? null,
     created_by_name: extra.creatorName ?? null,
     created_at: new Date(row.created_at).toISOString(),
     items: extra.items,
@@ -272,12 +277,25 @@ export async function createReturn(input: ReturnCreateInput, user: SysUser): Pro
     ((orderItems ?? []) as Array<Record<string, unknown>>).map((i) => [i.product_id as string, i]),
   );
 
-  // 当前移动加权均价快照（红字冲销口径）
+  // 退回仓：入参 > 订单仓 > 默认仓 WH01
+  let warehouseId = input.warehouse_id ?? (order.warehouse_id as string | null);
+  if (!warehouseId) {
+    const { data: wh } = await supabase
+      .from('inv_warehouses')
+      .select('id')
+      .eq('code', 'WH01')
+      .maybeSingle();
+    warehouseId = (wh?.id as string | undefined) ?? null;
+  }
+
+  // 当前移动加权均价快照（红字冲销口径，按退回仓取）
   const productIds = [...new Set(input.items.map((i) => i.product_id))];
-  const { data: stockRows } = await supabase
+  let stockReq = supabase
     .from('inv_stock')
     .select('product_id, avg_cost')
     .in('product_id', productIds);
+  if (warehouseId) stockReq = stockReq.eq('warehouse_id', warehouseId);
+  const { data: stockRows } = await stockReq;
   const avgMap = new Map(
     ((stockRows ?? []) as Array<Record<string, unknown>>).map((s) => [
       s.product_id as string,
@@ -314,6 +332,7 @@ export async function createReturn(input: ReturnCreateInput, user: SysUser): Pro
       reason: emptyToNull(input.reason),
       remark: emptyToNull(input.remark),
       total_amount: total,
+      warehouse_id: warehouseId,
       created_by: user.id,
       status: 'draft',
     })

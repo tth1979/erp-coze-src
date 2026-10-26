@@ -4,7 +4,12 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import {
+  ArrowLeftRight,
+  BarChart3,
+  BellRing,
+  BookOpen,
   Boxes,
+  ClipboardCheck,
   ClipboardList,
   FileSignature,
   HandCoins,
@@ -17,11 +22,15 @@ import {
   PackageOpen,
   Receipt,
   RotateCcw,
+  Scale,
+  Settings,
   ShoppingCart,
+  Tags,
   Truck,
   Undo2,
   Users,
   Wallet,
+  Warehouse,
   X,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -60,6 +69,7 @@ const NAV: NavGroup[] = [
       { title: '客户档案', href: '/master-data/customers', icon: Users, permission: 'md.read' },
       { title: '供应商', href: '/master-data/suppliers', icon: Truck, permission: 'md.read' },
       { title: '商品主数据', href: '/master-data/products', icon: Package, permission: 'md.read' },
+      { title: '计量单位', href: '/master-data/units', icon: Scale, permission: 'md.read' },
     ],
   },
   {
@@ -84,6 +94,11 @@ const NAV: NavGroup[] = [
     items: [
       { title: '库存余额', href: '/inventory/stock', icon: Boxes, permission: 'inv.read' },
       { title: '库存流水', href: '/inventory/movements', icon: ClipboardList, permission: 'inv.read' },
+      { title: '批次台账', href: '/inventory/batches', icon: Tags, permission: 'inv.read' },
+      { title: '库存预警', href: '/inventory/alerts', icon: BellRing, permission: 'inv.read' },
+      { title: '库存调拨单', href: '/inventory/transfers', icon: ArrowLeftRight, permission: 'inv.read' },
+      { title: '库存盘点单', href: '/inventory/checks', icon: ClipboardCheck, permission: 'inv.read' },
+      { title: '仓库档案', href: '/inventory/warehouses', icon: Warehouse, permission: 'inv.read' },
     ],
   },
   {
@@ -92,6 +107,21 @@ const NAV: NavGroup[] = [
       { title: '应收欠款', href: '/finance/receivables', icon: HandCoins, permission: 'fin.read' },
       { title: '应付欠款', href: '/finance/payables', icon: Wallet, permission: 'fin.read' },
       { title: '收付款流水', href: '/finance/payments', icon: ClipboardList, permission: 'fin.read' },
+    ],
+  },
+  {
+    group: '报表统计',
+    items: [
+      { title: '经营统计汇总', href: '/reports/overview', icon: BarChart3, permission: 'dashboard.read' },
+      { title: '采购报表', href: '/reports/purchase', icon: ShoppingCart, permission: 'dashboard.read' },
+      { title: '销售报表', href: '/reports/sales', icon: Receipt, permission: 'dashboard.read' },
+      { title: '库存报表', href: '/reports/inventory', icon: Boxes, permission: 'dashboard.read' },
+    ],
+  },
+  {
+    group: '系统设置',
+    items: [
+      { title: '数据字典', href: '/system/dictionary', icon: BookOpen, permission: 'md.read' },
     ],
   },
 ];

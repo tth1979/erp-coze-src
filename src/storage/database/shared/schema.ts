@@ -177,6 +177,8 @@ export const mdProducts = pgTable(
     area_per_box: numeric("area_per_box", { precision: 10, scale: 3 }),
     reference_purchase_price: numeric("reference_purchase_price", { precision: 12, scale: 2 }),
     reference_sale_price: numeric("reference_sale_price", { precision: 12, scale: 2 }),
+    /** 安全库存阈值（跨仓合计现有量 ≤ 该值触发预警；0=不预警） */
+    safety_stock: numeric("safety_stock", { precision: 12, scale: 3 }).notNull().default("0"),
     status: varchar("status", { length: 20 }).notNull().default("active"),
     remark: text("remark"),
     created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
@@ -218,6 +220,8 @@ export const poPurchaseOrders = pgTable(
     total_amount: numeric("total_amount", { precision: 14, scale: 2 }).notNull().default("0"),
     /** 来源采购申请单（可空；申请单转入后回写） */
     requisition_id: varchar("requisition_id", { length: 36 }),
+    /** 期望入库仓库（可空，空=默认仓 WH01；一键到货入库时带入入库单） */
+    warehouse_id: varchar("warehouse_id", { length: 36 }).references(() => invWarehouses.id),
     /** 审批级别（按金额命中规则，1-4；未提交为 null） */
     approval_level: integer("approval_level"),
     /** 当前审批步（1 起；审批完成为 0） */
@@ -291,6 +295,8 @@ export const soSalesOrders = pgTable(
     order_date: date("order_date", { mode: "string" }).notNull(),
     /** 订单总额（由明细行服务端计算，审批通过即锁定成交价） */
     total_amount: numeric("total_amount", { precision: 14, scale: 2 }).notNull().default("0"),
+    /** 发货仓库（可空，空=默认仓 WH01；一键发货出库时带入出库单） */
+    warehouse_id: varchar("warehouse_id", { length: 36 }).references(() => invWarehouses.id),
     /** 审批：命中的规则级别 / 当前步骤序号 */
     approval_level: integer("approval_level"),
     current_step: integer("current_step").notNull().default(0),
@@ -357,6 +363,8 @@ export const soShipments = pgTable(
       .references(() => mdCustomers.id),
     /** 状态：draft | pending | approved(已出库) | rejected | closed */
     status: varchar("status", { length: 20 }).notNull().default("draft"),
+    /** 出库仓库（可空，空=默认仓 WH01） */
+    warehouse_id: varchar("warehouse_id", { length: 36 }).references(() => invWarehouses.id),
     ship_date: date("ship_date", { mode: "string" }).notNull(),
     /** 出库金额（按订单锁定成交价计算） */
     total_amount: numeric("total_amount", { precision: 14, scale: 2 }).notNull().default("0"),
@@ -424,6 +432,8 @@ export const soReturns = pgTable(
       .references(() => mdCustomers.id),
     /** 状态：draft | pending | approved(已入库) | rejected | closed */
     status: varchar("status", { length: 20 }).notNull().default("draft"),
+    /** 退货入仓库（可空，空=默认仓 WH01） */
+    warehouse_id: varchar("warehouse_id", { length: 36 }).references(() => invWarehouses.id),
     return_date: date("return_date", { mode: "string" }).notNull(),
     reason: text("reason"),
     /** 退货金额（红字，按销售价计） */
@@ -474,21 +484,42 @@ export const soReturnItems = pgTable(
 );
 
 // ============================================================
-// 库存模块（inv_*）
-// 余额表（每个商品一行）+ 流水台账；出入库强一致由数据库函数保证
+// 库存模块（inv_*，库存 V2 多仓库版）
+// 余额表（仓库 × 商品一行）+ 批次表 + 只追加台账；出入库强一致由数据库函数保证
 // ============================================================
 
-/** 库存余额（单仓库模型，每个商品一行） */
+/** 仓库档案 */
+export const invWarehouses = pgTable(
+  "inv_warehouses",
+  {
+    id: varchar("id", { length: 36 }).primaryKey().default(sql`gen_random_uuid()`),
+    /** 仓库编码（业务唯一，如 WH01） */
+    code: varchar("code", { length: 20 }).notNull().unique(),
+    name: varchar("name", { length: 100 }).notNull(),
+    address: text("address"),
+    is_active: boolean("is_active").notNull().default(true),
+    created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [index("inv_wh_active_idx").on(table.is_active)],
+);
+
+/** 库存余额（仓库 × 商品一行；可用量 = quantity − frozen_quantity） */
 export const invStock = pgTable(
   "inv_stock",
   {
     id: varchar("id", { length: 36 }).primaryKey().default(sql`gen_random_uuid()`),
+    warehouse_id: varchar("warehouse_id", { length: 36 })
+      .notNull()
+      .references(() => invWarehouses.id),
     product_id: varchar("product_id", { length: 36 })
       .notNull()
-      .unique()
       .references(() => mdProducts.id),
-    /** 当前库存数量 */
+    /** 现有量（实物在库数量） */
     quantity: numeric("quantity", { precision: 14, scale: 3 }).notNull().default("0"),
+    /** 在途量（调拨已审未收货，计入本仓） */
+    in_transit: numeric("in_transit", { precision: 14, scale: 3 }).notNull().default("0"),
+    /** 冻结量（不可用数量；可用量 = quantity − frozen） */
+    frozen_quantity: numeric("frozen_quantity", { precision: 14, scale: 3 }).notNull().default("0"),
     /** 移动加权平均单位成本（采购 V2 入库时重算） */
     avg_cost: numeric("avg_cost", { precision: 14, scale: 4 }).notNull().default("0"),
     /** 库存货值 = Σ(入库金额) − Σ(出库成本)，随移动加权联动 */
@@ -496,29 +527,71 @@ export const invStock = pgTable(
     created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     updated_at: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
   },
-  (table) => [index("inv_stock_quantity_idx").on(table.quantity)],
+  (table) => [
+    unique("inv_stock_warehouse_product_unique").on(table.warehouse_id, table.product_id),
+    index("inv_stock_quantity_idx").on(table.quantity),
+    index("inv_stock_product_idx").on(table.product_id),
+  ],
 );
 
-/** 库存流水（台账，只追加不改写） */
-export const invStockMovements = pgTable(
-  "inv_stock_movements",
+/** 库存批次（入库自动生成批次：批号默认取入库单号；出库按 FIFO 扣减剩余量） */
+export const invBatches = pgTable(
+  "inv_batches",
   {
     id: varchar("id", { length: 36 }).primaryKey().default(sql`gen_random_uuid()`),
+    /** 批号（采购入库=入库单号；销售退货=退货单号；调拨调入=调拨单号） */
+    batch_no: varchar("batch_no", { length: 40 }).notNull(),
     product_id: varchar("product_id", { length: 36 })
       .notNull()
       .references(() => mdProducts.id),
+    warehouse_id: varchar("warehouse_id", { length: 36 })
+      .notNull()
+      .references(() => invWarehouses.id),
+    /** 批次入库单位成本快照（用于 FIFO 对账） */
+    unit_cost: numeric("unit_cost", { precision: 14, scale: 4 }).notNull().default("0"),
+    initial_quantity: numeric("initial_quantity", { precision: 14, scale: 3 }).notNull(),
+    /** 剩余量（FIFO 扣减；CHECK 非负） */
+    remaining_quantity: numeric("remaining_quantity", { precision: 14, scale: 3 }).notNull(),
+    production_date: date("production_date", { mode: "string" }),
+    expiry_date: date("expiry_date", { mode: "string" }),
+    /** 来源单号（入库/退货/调拨单号） */
+    source_ref: varchar("source_ref", { length: 40 }),
+    created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    unique("inv_batches_unique").on(table.product_id, table.warehouse_id, table.batch_no),
+    index("inv_batches_product_idx").on(table.product_id),
+    index("inv_batches_warehouse_idx").on(table.warehouse_id),
+    index("inv_batches_expiry_idx").on(table.expiry_date),
+  ],
+);
+
+/** 库存台账（原 inv_stock_movements，0008 改名；只追加不改写，CHECK 余额非负） */
+export const invStockLedger = pgTable(
+  "inv_stock_ledger",
+  {
+    id: varchar("id", { length: 36 }).primaryKey().default(sql`gen_random_uuid()`),
+    warehouse_id: varchar("warehouse_id", { length: 36 })
+      .notNull()
+      .references(() => invWarehouses.id),
+    product_id: varchar("product_id", { length: 36 })
+      .notNull()
+      .references(() => mdProducts.id),
+    /** 批次（出库为 FIFO 扣减的首个批次；可空） */
+    batch_id: varchar("batch_id", { length: 36 }),
     /** 类型：in(入库) | out(出库) | adjust(盘盈/盘亏) */
     type: varchar("type", { length: 16 }).notNull(),
     /** 本次变动数量（in/adjust盘盈为正，out/adjust盘亏为负） */
     quantity: numeric("quantity", { precision: 14, scale: 3 }).notNull(),
-    /** 变动后余额（冗余快照，便于台账直接对账） */
+    /** 变动后余额（冗余快照，便于台账直接对账；CHECK 非负） */
     balance: numeric("balance", { precision: 14, scale: 3 }).notNull(),
-    /** 来源：purchase_in / sales_out / purchase_return / receipt_reversal / manual */
+    /** 来源：purchase_in / sales_out / purchase_return / receipt_reversal / sales_return_in /
+     *  transfer_out / transfer_in / check_in / check_out / manual */
     source: varchar("source", { length: 32 }).notNull().default("manual"),
     /** 单位成本快照（入库=入库价；出库=当时移动加权成本；历史数据可空） */
     unit_cost: numeric("unit_cost", { precision: 14, scale: 4 }),
-    /** 关联单号（如 PO/SO 单号），手工出入库可空 */
-    ref_no: varchar("ref_no", { length: 32 }),
+    /** 关联单号（如 PO/SO/IT/IC 单号），手工出入库可空 */
+    ref_no: varchar("ref_no", { length: 40 }),
     remark: text("remark"),
     created_by: varchar("created_by", { length: 36 }).references(() => sysUsers.id),
     created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
@@ -527,6 +600,128 @@ export const invStockMovements = pgTable(
     index("inv_mov_product_idx").on(table.product_id),
     index("inv_mov_created_at_idx").on(table.created_at),
     index("inv_mov_type_idx").on(table.type),
+    index("inv_mov_warehouse_idx").on(table.warehouse_id),
+  ],
+);
+
+/** 调拨单（仓库 → 仓库；审核=调出仓出库+调入仓在途，收货=在途转库存） */
+export const invTransfers = pgTable(
+  "inv_transfers",
+  {
+    id: varchar("id", { length: 36 }).primaryKey().default(sql`gen_random_uuid()`),
+    /** 调拨单号：ITyyyymmdd-NNNN（业务唯一） */
+    transfer_no: varchar("transfer_no", { length: 32 }).notNull().unique(),
+    from_warehouse_id: varchar("from_warehouse_id", { length: 36 })
+      .notNull()
+      .references(() => invWarehouses.id),
+    to_warehouse_id: varchar("to_warehouse_id", { length: 36 })
+      .notNull()
+      .references(() => invWarehouses.id),
+    /**
+     * 状态机：draft → pending → approved(已审，调出仓已出库/调入仓在途) → received(已收货)
+     *         ↘ rejected(可编辑重提) | draft/pending/rejected → closed
+     */
+    status: varchar("status", { length: 20 }).notNull().default("draft"),
+    transfer_date: date("transfer_date", { mode: "string" }).notNull(),
+    approval_level: integer("approval_level"),
+    current_step: integer("current_step").notNull().default(0),
+    submitted_by: varchar("submitted_by", { length: 36 }).references(() => sysUsers.id),
+    submitted_at: timestamp("submitted_at", { withTimezone: true }),
+    approved_by: varchar("approved_by", { length: 36 }).references(() => sysUsers.id),
+    approved_at: timestamp("approved_at", { withTimezone: true }),
+    reject_reason: text("reject_reason"),
+    /** 收货确认时间（received 时非空） */
+    received_at: timestamp("received_at", { withTimezone: true }),
+    remark: text("remark"),
+    created_by: varchar("created_by", { length: 36 }).references(() => sysUsers.id),
+    created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updated_at: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index("inv_transfers_status_idx").on(table.status),
+    index("inv_transfers_created_at_idx").on(table.created_at),
+  ],
+);
+
+/** 调拨单明细 */
+export const invTransferItems = pgTable(
+  "inv_transfer_items",
+  {
+    id: varchar("id", { length: 36 }).primaryKey().default(sql`gen_random_uuid()`),
+    transfer_id: varchar("transfer_id", { length: 36 })
+      .notNull()
+      .references(() => invTransfers.id, { onDelete: "cascade" }),
+    product_id: varchar("product_id", { length: 36 })
+      .notNull()
+      .references(() => mdProducts.id),
+    quantity: numeric("quantity", { precision: 12, scale: 3 }).notNull(),
+    /** 调出时移动加权成本快照（调入仓按此成本入账） */
+    unit_cost: numeric("unit_cost", { precision: 14, scale: 4 }),
+    unit: varchar("unit", { length: 16 }),
+    created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index("inv_transfer_items_doc_idx").on(table.transfer_id),
+    index("inv_transfer_items_product_idx").on(table.product_id),
+  ],
+);
+
+/** 盘点单（按仓盘点；审批通过=差异过账，盘盈入库/盘亏出库） */
+export const invChecks = pgTable(
+  "inv_checks",
+  {
+    id: varchar("id", { length: 36 }).primaryKey().default(sql`gen_random_uuid()`),
+    /** 盘点单号：ICyyyymmdd-NNNN（业务唯一） */
+    check_no: varchar("check_no", { length: 32 }).notNull().unique(),
+    warehouse_id: varchar("warehouse_id", { length: 36 })
+      .notNull()
+      .references(() => invWarehouses.id),
+    /** 状态机：draft → pending → approved(差异已过账) / rejected；draft/pending/rejected → closed */
+    status: varchar("status", { length: 20 }).notNull().default("draft"),
+    check_date: date("check_date", { mode: "string" }).notNull(),
+    approval_level: integer("approval_level"),
+    current_step: integer("current_step").notNull().default(0),
+    submitted_by: varchar("submitted_by", { length: 36 }).references(() => sysUsers.id),
+    submitted_at: timestamp("submitted_at", { withTimezone: true }),
+    approved_by: varchar("approved_by", { length: 36 }).references(() => sysUsers.id),
+    approved_at: timestamp("approved_at", { withTimezone: true }),
+    reject_reason: text("reject_reason"),
+    remark: text("remark"),
+    created_by: varchar("created_by", { length: 36 }).references(() => sysUsers.id),
+    created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updated_at: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index("inv_checks_status_idx").on(table.status),
+    index("inv_checks_warehouse_idx").on(table.warehouse_id),
+  ],
+);
+
+/** 盘点单明细（book=建单账面快照；difference=过账时按当时账面重算：实盘−账面） */
+export const invCheckItems = pgTable(
+  "inv_check_items",
+  {
+    id: varchar("id", { length: 36 }).primaryKey().default(sql`gen_random_uuid()`),
+    check_id: varchar("check_id", { length: 36 })
+      .notNull()
+      .references(() => invChecks.id, { onDelete: "cascade" }),
+    product_id: varchar("product_id", { length: 36 })
+      .notNull()
+      .references(() => mdProducts.id),
+    /** 账面数量（建单时快照） */
+    book_quantity: numeric("book_quantity", { precision: 14, scale: 3 }).notNull(),
+    /** 实盘数量 */
+    counted_quantity: numeric("counted_quantity", { precision: 14, scale: 3 }).notNull(),
+    /** 差异 = counted − book（过账时按过账瞬间账面重算更新） */
+    difference: numeric("difference", { precision: 14, scale: 3 }).notNull().default("0"),
+    /** 过账成本快照（盘亏=当时加权均价；盘盈=当时加权均价） */
+    unit_cost: numeric("unit_cost", { precision: 14, scale: 4 }),
+    unit: varchar("unit", { length: 16 }),
+    created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index("inv_check_items_doc_idx").on(table.check_id),
+    index("inv_check_items_product_idx").on(table.product_id),
   ],
 );
 
@@ -710,6 +905,8 @@ export const poReceipts = pgTable(
      *                    ↘ rejected | draft/pending → closed
      */
     status: varchar("status", { length: 20 }).notNull().default("draft"),
+    /** 入库仓库（可空，空=默认仓 WH01） */
+    warehouse_id: varchar("warehouse_id", { length: 36 }).references(() => invWarehouses.id),
     /** 暂估入库（发票未到按暂估价入账） */
     is_estimated: boolean("is_estimated").notNull().default(false),
     /** 来票发票号（冲回时登记） */
@@ -780,6 +977,8 @@ export const poReturns = pgTable(
       .references(() => mdSuppliers.id),
     /** 状态：draft → pending → approved(已出库) ↘ rejected | closed */
     status: varchar("status", { length: 20 }).notNull().default("draft"),
+    /** 退货出仓库（可空，空=默认仓 WH01） */
+    warehouse_id: varchar("warehouse_id", { length: 36 }).references(() => invWarehouses.id),
     /** 退货原因 */
     reason: text("reason"),
     total_amount: numeric("total_amount", { precision: 14, scale: 2 }).notNull().default("0"),
@@ -827,6 +1026,80 @@ export const poReturnItems = pgTable(
 );
 
 // ============================================================
+// 系统数据字典（dict_*）：字典类型 + 字典项，供各模块下拉引用
+// ============================================================
+
+/** 字典类型（如 unit 计量单位 / payment_method 付款方式 / tax_rate 税率 / customer_level 客户等级） */
+export const dictSystemTypes = pgTable(
+  "dict_system_types",
+  {
+    id: varchar("id", { length: 36 }).primaryKey().default(sql`gen_random_uuid()`),
+    /** 字典类型编码（业务唯一，供前端下拉引用） */
+    type_code: varchar("type_code", { length: 48 }).notNull().unique(),
+    name: varchar("name", { length: 128 }).notNull(),
+    description: varchar("description", { length: 256 }),
+    /** 是否系统内置（内置类型不可删除） */
+    is_system: boolean("is_system").notNull().default(false),
+    is_active: boolean("is_active").notNull().default(true),
+    sort: integer("sort").notNull().default(0),
+    created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updated_at: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [index("dict_types_active_idx").on(table.is_active)],
+);
+
+/** 字典项（type_code 关联类型，不建外键以允许类型级级联维护） */
+export const dictSystemItems = pgTable(
+  "dict_system_items",
+  {
+    id: varchar("id", { length: 36 }).primaryKey().default(sql`gen_random_uuid()`),
+    type_code: varchar("type_code", { length: 48 }).notNull(),
+    /** 字典项编码（同类型内唯一） */
+    item_code: varchar("item_code", { length: 48 }).notNull(),
+    /** 展示名 */
+    label: varchar("label", { length: 128 }).notNull(),
+    /** 扩展属性（如客户等级折扣率 {"discount_rate":0.95}） */
+    extra: jsonb("extra"),
+    sort: integer("sort").notNull().default(0),
+    is_active: boolean("is_active").notNull().default(true),
+    created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updated_at: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    unique("dict_items_type_code_item_code_uniq").on(table.type_code, table.item_code),
+    index("dict_items_type_idx").on(table.type_code),
+    index("dict_items_active_idx").on(table.is_active),
+  ],
+);
+
+// ============================================================
+// 基础资料扩充：计量单位（md_units，含换算法则）
+// ============================================================
+
+/** 计量单位（可维护换算关系：1 单位 = conversion_ratio 基准单位） */
+export const mdUnits = pgTable(
+  "md_units",
+  {
+    id: varchar("id", { length: 36 }).primaryKey().default(sql`gen_random_uuid()`),
+    /** 单位编码（业务唯一） */
+    unit_code: varchar("unit_code", { length: 32 }).notNull().unique(),
+    unit_name: varchar("unit_name", { length: 64 }).notNull(),
+    /** 基准单位（换算的锚点，如 片） */
+    base_unit: varchar("base_unit", { length: 16 }).notNull(),
+    /** 换算系数：1 本单位 = conversion_ratio 基准单位 */
+    conversion_ratio: numeric("conversion_ratio", { precision: 12, scale: 4 }).notNull().default("1"),
+    remark: varchar("remark", { length: 256 }),
+    is_active: boolean("is_active").notNull().default(true),
+    created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updated_at: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index("md_units_active_idx").on(table.is_active),
+    index("md_units_base_unit_idx").on(table.base_unit),
+  ],
+);
+
+// ============================================================
 // 类型导出
 // ============================================================
 export type SysUser = typeof sysUsers.$inferSelect;
@@ -840,7 +1113,13 @@ export type PoPurchaseOrderItem = typeof poPurchaseOrderItems.$inferSelect;
 export type SoSalesOrder = typeof soSalesOrders.$inferSelect;
 export type SoSalesOrderItem = typeof soSalesOrderItems.$inferSelect;
 export type InvStock = typeof invStock.$inferSelect;
-export type InvStockMovement = typeof invStockMovements.$inferSelect;
+export type InvStockLedger = typeof invStockLedger.$inferSelect;
+export type InvWarehouse = typeof invWarehouses.$inferSelect;
+export type InvBatch = typeof invBatches.$inferSelect;
+export type InvTransfer = typeof invTransfers.$inferSelect;
+export type InvTransferItem = typeof invTransferItems.$inferSelect;
+export type InvCheck = typeof invChecks.$inferSelect;
+export type InvCheckItem = typeof invCheckItems.$inferSelect;
 export type FinPayment = typeof finPayments.$inferSelect;
 export type PoApprovalRule = typeof poApprovalRules.$inferSelect;
 export type PoApprovalRuleStep = typeof poApprovalRuleSteps.$inferSelect;
@@ -852,6 +1131,9 @@ export type PoReceiptItem = typeof poReceiptItems.$inferSelect;
 export type PoReturn = typeof poReturns.$inferSelect;
 export type PoReturnItem = typeof poReturnItems.$inferSelect;
 export type SoShipment = typeof soShipments.$inferSelect;
+export type DictSystemType = typeof dictSystemTypes.$inferSelect;
+export type DictSystemItem = typeof dictSystemItems.$inferSelect;
+export type MdUnit = typeof mdUnits.$inferSelect;
 export type SoShipmentItem = typeof soShipmentItems.$inferSelect;
 export type SoReturn = typeof soReturns.$inferSelect;
 export type SoReturnItem = typeof soReturnItems.$inferSelect;

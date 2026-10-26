@@ -8,8 +8,10 @@ export async function GET(request: NextRequest) {
   try {
     const { user } = await requireAuth(request);
     requirePermission(user, 'inv.read');
-    const query = parseListQuery(request.nextUrl.searchParams);
-    return ok(await listStock(query));
+    const params = request.nextUrl.searchParams;
+    const query = parseListQuery(params);
+    const warehouseId = (params.get('warehouse_id') ?? '').trim() || undefined;
+    return ok(await listStock({ ...query, warehouse_id: warehouseId }));
   } catch (error) {
     return handleError(error);
   }

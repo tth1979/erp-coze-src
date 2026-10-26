@@ -52,8 +52,11 @@
 | 基础资料模块 | `md_*` | 客户、供应商、商品主数据 |
 | 采购模块（已交付 V2） | `po_*` | 五单主链路：申请单(审批)→订单(审批)→入库单(暂估/冲回)→退货单；四级审批引擎；入库即库存+移动加权成本 |
 | 销售模块（已交付 V2） | `so_*` | 三单主链路：订单(审批+等级价格)→出库单(数量强校验+成本结转)→退货单(红字回补)；应收联动 |
-| 库存模块（已交付 MVP） | `inv_*` | 库存余额 + 只追加流水台账，采购到货入库 / 销售发货出库 |
+| 库存模块（已交付 V2） | `inv_*` | 多仓台账（现有/在途/冻结/可用）+ 批次 FIFO + 只追加台账 + 调拨单(IT)双边单事务 + 盘点单(IC)差异过账 + 安全库存预警 |
 | 财务模块（已交付 MVP） | `fin_*` | 应收/应付欠款汇总 + 收付款单（超额拦截）+ 流水台账 |
+| 报表模块（周边，V1） | `report_*`（无独立表，SDK 只读聚合） | 经营统计：汇总卡片/采购/销售/库存报表，dashboard 趋势图 |
+| 系统字典模块（周边，V1） | `dict_*` | 字典类型+字典项（计量单位/付款方式/税率/客户等级/状态），种子预置、供下拉引用 |
+| 计量单位（周边，V1） | `md_units` | 基础资料扩充：计量单位档案 + 基准单位+换算系数 |
 | 后续业务模块（预留） | `proc_*` / `tax_*` | 加工、税务 |
 
 > 托管 PostgREST 仅暴露 public schema，故以表名前缀实现"单库逻辑多 schema"隔离。
@@ -62,7 +65,7 @@
 
 - **数据模型**：`sys_users`（用户主体+role 枚举）/ `sys_user_credentials`（凭证抽象，新增登录方式=新增 type）/ `sys_sessions`（会话）。
 - **登录**：POST `/api/auth/login` `{type:'password', payload:{username,password}}` → httpOnly Cookie `erp_session`。
-- **权限模型**：角色 → 权限点映射在 `src/server/auth/permissions.ts`（admin=`*`，manager=读写+`po.approve`，staff=只读）。
+- **权限模型**：角色 → 权限点映射在 `src/server/auth/permissions.ts`（admin=`*`，manager=读写+`po.approve`/`so.approve`/`inv.write`/`inv.approve`，staff=只读）。
 - **DEV 审批冒烟账号**：`dev_manager@coze.dev`（manager，密码 manager123456）、`dev_user@coze.dev`（staff）。
   API 层用 `requireAuth(request)` / `requirePermission(auth, 'md.write')` 做守卫；前端 `useAuth().can()` 控制菜单/按钮显隐。
 - **升级路径**：T3 完整 RBAC（roles/permissions/role_permissions/user_roles 四表）为单向加表升级，见 `src/server/auth/permissions.ts` 注释。
@@ -113,14 +116,38 @@
 | GET/POST | /api/so/returns | so.read / so.write | 退货单列表 / 新建（SR 单号，订单须 approved/shipped） |
 | GET/DELETE | /api/so/returns/[id] | so.read / so.write | 退货单详情 / 删除（draft/rejected） |
 | POST | /api/so/returns/[id]/submit、approve、reject | so.write / so.approve | 退货单审批（终审=红字回补库存/成本，超已出库量整单 400） |
-| GET | /api/inv/stock | inv.read | 库存余额分页（商品名/编码 keyword 搜索） |
-| GET | /api/inv/movements | inv.read | 库存流水分页（type=in/out/adjust、商品/单号 keyword） |
+| GET | /api/inv/stock | inv.read | 库存余额分页（商品名/编码 keyword、warehouse_id 仓过滤） |
+| POST | /api/inv/stock/freeze | inv.write | 冻结量调整（正负增量，超额 400） |
+| GET | /api/inv/movements | inv.read | 台账流水分页（type=in/out/adjust、商品/单号 keyword、warehouse_id） |
+| GET | /api/inv/batches | inv.read | 批次分页（keyword 商品/批号、in_stock=1 仅有余量） |
+| GET | /api/inv/alerts | inv.read | 安全库存预警（跨仓合计 ≤ safety_stock） |
+| GET/POST | /api/inv/warehouses | inv.read / inv.write | 仓库列表 / 新增 |
+| PUT | /api/inv/warehouses/[id] | inv.write | 仓库更新（改名/地址/启停） |
+| GET/POST | /api/inv/transfers | inv.read / inv.write | 调拨单分页（status/from_warehouse_id/to_warehouse_id）/ 新建 |
+| GET/PUT/DELETE | /api/inv/transfers/[id] | inv.read / inv.write | 调拨单详情（含明细+步骤）/ 更新 / 删除（仅 draft） |
+| POST | /api/inv/transfers/[id]/submit、approve、reject | inv.write / inv.approve | 调拨单审批（终审=调出减存+调入在途） |
+| POST | /api/inv/transfers/[id]/receive | inv.write | 调拨收货（approved→received，在途转调入库存+批次） |
+| POST | /api/inv/transfers/[id]/cancel | inv.write | 关闭调拨单（draft/pending/rejected→closed） |
+| GET/POST | /api/inv/checks | inv.read / inv.write | 盘点单分页 / 新建（按仓快照账面明细） |
+| GET/PUT/DELETE | /api/inv/checks/[id] | inv.read / inv.write | 盘点单详情 / 录入实盘数 / 删除（仅 draft） |
+| POST | /api/inv/checks/[id]/submit、approve、reject、cancel | inv.write / inv.approve | 盘点单审批（终审=差异过账，盘盈入/盘亏出） |
 | GET | /api/fin/receivables | fin.read | 应收欠款按客户汇总分页（billed/received/outstanding，keyword 搜客户） |
 | GET | /api/fin/payables | fin.read | 应付欠款按供应商汇总分页（billed/paid/outstanding） |
 | GET/POST | /api/fin/receipts | fin.read / fin.write | 收款单分页列表 / 登记收款 |
 | DELETE | /api/fin/receipts/[id] | fin.write | 删除收款单（欠款回升） |
 | GET/POST | /api/fin/payments | fin.read / fin.write | 付款单分页列表（direction 筛选）/ 登记付款 |
 | DELETE | /api/fin/payments/[id] | fin.write | 删除付款单 |
+| GET | /api/report/overview | 已登录 | 经营报表汇总：cards(采购/销售/毛利/应收应付/库存总值) + buckets(今日/本月/累计) + trends(近12月趋势) |
+| GET | /api/report/purchase | 已登录 | 采购报表（groupBy=suppider/month，from/to 过滤） |
+| GET | /api/report/sales | 已登录 | 销售报表（groupBy=customer/product/month，from/to 过滤） |
+| GET | /api/report/inventory | 已登录 | 库存报表（groupBy=warehouse/product，按数量/货值汇总） |
+| GET/POST | /api/dict/types | md.read / md.write | 字典类型分页列表 / 新增 |
+| GET/PUT/DELETE | /api/dict/types/[id] | md.read / md.write | 字典类型详情 / 更新 / 删除（is_system 内置类型不可删，级联删项） |
+| GET/POST | /api/dict/items | md.read / md.write | 字典项分页列表（type= 过滤）/ 新增 |
+| GET/PUT/DELETE | /api/dict/items/[id] | md.read / md.write | 字典项详情 / 更新 / 删除 |
+| GET | /api/dict/lookup?types=unit,payment_method | 已登录 | 只读引用：按类型(逗号分隔)返回活跃字典项映射 { data: { type: items } }，供下拉 |
+| GET/POST | /api/md/units | md.read / md.write | 计量单位分页列表（keyword）/ 新增 |
+| GET/PUT/DELETE | /api/md/units/[id] | md.read / md.write | 计量单位详情 / 更新 / 删除 |
 
 分页参数：`page`(≥1) `pageSize`(1-100) `keyword`（模糊搜索）；响应 `{ items, total, page, page_size }`。
 
@@ -136,16 +163,19 @@
 - **供应商应付口径**（fin 聚合）：Σ(订单 status∈received/completed) + Σ(蓝字−红字) − Σ(approved 退货) − Σ(付款)。
 - **单号**：PO/PR/GR/RT + `yyyymmdd-NNNN`；GRR/GRB 在数据库函数内生成。所有单号生成统一走 `src/server/doc-no.ts` 的 `nextDocNo`（**当日最大序号+1**，非 count+1——删除中间单号后 count 与 max 错位会撞号；数据库函数内同样用 `MAX(substring(no from '-(\d+)$'))+1`），unique 约束兜底。
 
-### 库存模块约定（inv_*）
+### 库存模块约定（inv_*，V2 多仓 + 批次 + 调拨/盘点）
 
-- **表**：`inv_stock`（余额，product_id 唯一 FK→md_products，quantity numeric(14,3)）+ `inv_stock_movements`（**只追加**流水：type in/out/adjust、quantity 带符号、balance 余额快照、source purchase_in/sales_out/manual、ref_no 关联单号、remark、created_by FK→sys_users）。流水不做 UPDATE/DELETE。
-- **强一致联动**：Supabase SDK 无多语句事务，故"状态流转 + 库存余额更新 + 流水追加"下沉为 plpgsql 数据库函数在**单事务**内完成（见 `db/migrations/0004_inventory.sql` 起的演进；购销终审函数见 0006/0007）：
-  - `inv_apply_movement(p_product_id, p_type, p_quantity, p_source, p_ref_no, p_remark, p_user_id)`：`SELECT ... FOR UPDATE` 行锁串行化更新余额，upsert 余额行，写流水；库存不足（出库后余额<0）`RAISE EXCEPTION 'P0001:...'` 整事务回滚。
-  - 采购：`inv_apply_receipt_in`（入库加权）、`inv_apply_issue_out`（按均价出库）、`po_execute_receipt`/`po_execute_return`/`po_fulfill_order`/`po_reverse_receipt`；销售：`so_execute_shipment`/`so_execute_return`/`so_fulfill_order`。旧函数 `inv_complete_purchase`/`inv_complete_sales` 已在 V2 迁移中 DROP。
-- **错误码映射**：服务端 `src/server/inventory/shared.ts` 解析 SQLSTATE —— `P0001`→400 `INV.INSUFFICIENT_STOCK`（库存不足）、`P0404`→404、`P0400`→400 `INV.BAD_TRANSITION`，其余→500。终审 RPC 失败时单据保持 pending（审批步骤已自动回滚）、余额不变。
-- **触发时机**：采购订单 approved 态"到货入库"（一键生成并审核入库单）、销售订单 approved 态"发货出库"（一键生成并审核出库单），均走 `POST /api/{po|so}/orders/[id]/complete`；或在入库单/出库单详情页单独提交审批。
-- **权限**：`inv.read`（manager/staff/admin 只读）；当前无手工写库存界面，`inv.write` 预留给后续"手工盘点调整"。
-- **仪表盘**：`/api/stats/overview` 返回 `inventory:{tracked_kinds, out_of_stock}`（纳管品类数、quantity<=0 缺货数）。
+- **表**：`inv_warehouses`（仓库档案，code 唯一，WH01 默认仓）、`inv_stock`（余额：(warehouse_id, product_id) 复合唯一；quantity 现有 / in_transit 在途 / frozen_quantity 冻结；可用量 = quantity − frozen）、`inv_stock_ledger`（原 inv_stock_movements 0008 改名；**只追加**流水：type in/out/adjust、quantity 带符号、balance 余额快照 **CHECK 非负**、warehouse_id FK、batch_id、source purchase_in/sales_out/purchase_return/receipt_reversal/sales_return_in/transfer_out/transfer_in/check_in/check_out/manual、unit_cost 成本快照、ref_no 关联单号、created_by FK→sys_users）、`inv_batches`（批次：(product_id, warehouse_id, batch_no) 唯一，批号=来源单号；initial_quantity 累计入库 / remaining_quantity FIFO 扣减 CHECK 非负；unit_cost 入库成本快照；production_date/expiry_date 效期）。流水不做 UPDATE/DELETE。
+- **调拨/盘点单**：`inv_transfers`(IT) 状态机 draft→pending→approved(调出已出库/调入在途)→received(收货转库存)；`inv_checks`(IC) draft→pending→approved(差异已过账)；明细表 `_items`（调拨明细带 unit_cost 成本快照；盘点明细 book_quantity 账面快照/counted_quantity 实盘/difference 差异）。仅 draft 可删，draft/rejected 可编辑，draft/pending/rejected 可 closed。
+- **强一致联动**：plpgsql 数据库函数单事务完成（`db/migrations/0008_inventory.sql`）：
+  - `inv_apply_receipt_in(p_product, p_warehouse, p_qty, p_unit_cost, p_source, p_ref_no, p_remark, p_user)`：仓维度移动加权 + 批次 upsert + 台账。
+  - `inv_apply_issue_out(p_product, p_warehouse, p_qty, p_source, p_ref_no, p_remark, p_user)`：FIFO 扣批次剩余量 + 按均价出库，返回出库成本总额。
+  - `inv_adjust_frozen`（冻结/解冻，行锁校验 0≤frozen≤quantity）、`inv_execute_transfer`（终审=调出出库+调入在途，超可用量 P0001）、`inv_receive_transfer`（在途转现有+批次入库）、`inv_execute_check`（差异过账：盘盈 check_in/盘亏 check_out+台账）。
+  - 购销终审函数全部带仓（单据 warehouse_id 可空=默认仓 WH01，函数内 COALESCE 兜底）：`po_execute_receipt`/`po_execute_return`/`po_reverse_receipt`/`po_fulfill_order`/`so_execute_shipment`/`so_execute_return`/`so_fulfill_order`。
+- **审批**：复用通用引擎 `src/server/approval/engine.ts`，doc_type 扩展 `transfer`/`check`（规则种子：一级 manager）；终审 RPC 失败自动回滚步骤 pending。权限点 `inv.write`（建单/收货/冻结）、`inv.approve`（审批），均 admin+manager；staff 只读 `inv.read`。
+- **错误码映射**：服务端 `src/server/inventory/shared.ts` 解析 SQLSTATE —— `P0001`→400 `INV.INSUFFICIENT_STOCK`、`P0404`→404、`P0400`→400 `INV.BAD_TRANSITION`。
+- **预警**：`/api/inv/alerts` 按商品跨仓合计 quantity ≤ md_products.safety_stock 命中（safety_stock>0）；仪表盘 `inventory:{tracked_kinds, out_of_stock, alerts}`。
+- **仪表盘**：`/api/stats/overview` 返回 `inventory:{tracked_kinds, out_of_stock, alerts}`（alerts=命中预警品项数）。
 
 ### PostgREST 查询注意事项
 
@@ -175,6 +205,23 @@
 - **单号**：SO/SH/SR + `yyyymmdd-NNNN`；shipment 单号也可由 `so_fulfill_order` 在库内生成。
 - **前端**：`/sales/orders`（列表+new+[id]，详情含审批面板/发货出库/建出库单/建退货单入口）、`/sales/shipments`、`/sales/returns`（均列表+new+[id]）；订单编辑器选客户+商品后自动调 quote 预填建议价；ApprovalPanel DOC_PATH 已含销售三种 docType。
 
+### 报表模块约定（report_*，周边 V1，纯只读聚合）
+
+- **无独立表**：报表为只读实时聚合（SDK-only，不建表/视图/物化），满足"不用真实时序、SQL 聚合即可"的应用场景。数据源：`po_purchase_orders`(status=received)、`so_sales_orders`(status=shipped)、`so_shipments`(status=approved 的出库成本)、`inv_stock`(跨仓数量×avg_cost)、`fin_*`(应收应付口径同财务模块)。
+- **口径**：采购总额=Σ(received 采购订单总额)；销售总额=Σ(shipped 销售订单总额)；毛利=销售总额−Σ(approved 出库单 total_cost)；库存总值=Σ(inv_stock.quantity×avg_cost)，库存品项=Σ(有余额的 SKU)；应收/应付沿用财务模块欠款口径。
+- **分组**：`GET /api/report/{purchase,sales}?groupBy=` 支持 supplier/customer/product/month（按单号/商品名聚合，from/to 日期过滤）；inventory 支持 warehouse/product。
+- **服务端**：`src/server/reporting/*`（overview/purchase/sales/inventory/parse/shared）；/api/report/* 均走 `requireAuth`（已登录即可看，无独立权限点）。
+- **前端**：`/dashboard`（指标卡+今日/本月/累计+近12月 SVG 折线趋势）、`/reports/overview|purchase|sales|inventory`（可分组切换+打印）。图表为纯 SVG/CSS 组件（`src/components/reports/bar-chart.tsx`、`line-chart.tsx`、`report-panel.tsx`），无重库依赖。
+
+### 系统数据字典 + 基础资料扩充约定（周边 V1）
+
+- **表**：`dict_system_types`（字典类型，type_code 唯一、is_system 内置标记）+ `dict_system_items`（字典项，UNIQUE(type_code,item_code)、extra JSONB 存折扣/税率等扩展）+ `md_units`（计量单位：unit_code 唯一、base_unit 基准单位、conversion_ratio 换算系数）。
+- **种子**（0009_dict.sql 幂等）：unit(片/箱/㎡)、payment_method(现金/银行/微信/支付宝)、tax_rate(0/3/6/9/13%)、customer_level(normal/vip/strategic，extra.discount_rate 与销售等级一致)、status(启用/停用)；单位 片(基准)/箱(=10片)/㎡(=0.8片)。
+- **引用**：`GET /api/dict/lookup?types=a,b` 只读返回活跃项映射 `{data:{type:[items]}}`，供任意模块下拉（不建 FK，值快照在业务侧）。
+- **权限**：dict_* 与 md_units 写操作用 `md.write`（manager），读 `md.read`（staff 只读，写 403）；报表 `/api/report/*` 仅要求登录。
+- **仓库完善**：仓库管理沿用库存 `inv_warehouses`（已有清单+新增+启停维护），不另建 md_warehouse，避免双套仓库档案。
+- **前端**：`/system/dictionary`（类型+字典项双栏维护，系统内置类型不可删）、`/master-data/units`（计量单位分页+换算维护）。
+
 ### 数据库工作流（强制）
 
 1. `coze-coding-ai db generate-models`（首次）
@@ -196,15 +243,19 @@ src/
 │   ├── approval/            # 通用四级审批引擎（engine.ts，采购/销售共用，终审 RPC 失败自动回滚步骤）
 │   ├── purchase/            # 采购 V2：orders(订单) / requisitions(申请+转订单) / receipts(入库+暂估冲回) / returns(退货)
 │   ├── sales/               # 销售 V2：orders(订单+quote 等级报价) / shipments(出库+成本结转) / returns(退货红字回补)
-│   ├── inventory/           # 库存服务（stock 余额查询 / movements 流水 / shared RPC 错误映射）
-│   └── finance/             # 财务服务（payments 收付款单 CRUD + 应收/应付欠款汇总 + 超额校验）
+│   ├── inventory/           # 库存服务（stock 余额/warehouses 仓库/batches 批次/alerts 预警/movements 流水/transfers 调拨/checks 盘点/RPC 错误映射）
+│   ├── finance/             # 财务服务（payments 收付款单 CRUD + 应收/应付欠款汇总 + 超额校验）
+│   ├── reporting/           # 报表服务（overview 汇总卡片+趋势 / purchase / sales / inventory 分组聚合 / parse/shared）
+│   └── dict/                # 系统字典（dict.ts：类型/项的查询校验序列化 + lookup 引用）
 ├── app/api/                 # Route Handlers（薄层，调 server 服务）
 ├── app/(app)/               # 登录后区域（路由组，layout 内做守卫）
-│   ├── dashboard/           # 仪表盘（含采购/销售/库存/财务统计卡片）
-│   ├── master-data/         # customers / suppliers / products 页面
+│   ├── dashboard/           # 仪表盘（含采购/销售/库存/财务统计卡片 + 经营指标卡 + 近12月 SVG 趋势）
+│   ├── master-data/         # customers / suppliers / products / units(计量单位) 页面
+│   ├── reports/             # 经营报表：overview / purchase / sales / inventory（分组切换+打印）
+│   ├── system/              # system/dictionary 数据字典（类型+字典项双栏维护）
 │   ├── purchase/            # orders(订单) / requisitions(申请+convert) / receipts(入库+冲回) / returns(退货)，均列表+new+[id]
 │   ├── sales/               # orders(订单) / shipments(出库) / returns(退货)，均列表+new+[id]（new 需 ?order= 预填）
-│   ├── inventory/           # stock 库存余额 / movements 库存流水
+│   ├── inventory/           # stock 库存余额(冻结) / movements 台账 / batches 批次 / alerts 预警 / warehouses 仓库 / transfers 调拨(列表+new+[id]) / checks 盘点(列表+new+[id])
 │   └── finance/             # receivables 应收欠款 / payables 应付欠款 / payments 收付款流水
 ├── components/
 │   ├── auth/auth-provider.tsx   # 会话 Context（useAuth().can()）
@@ -212,10 +263,12 @@ src/
 │   ├── master-data/             # 表单对话框 / 分页 / 状态徽章 / 删除确认
 │   ├── trade/                   # 购销通用：订单编辑器(kind 区分购销) / 状态徽章 / 动作确认弹窗
 │   ├── purchase/                # 采购 V2 通用：approval-panel(审批步骤+操作) / doc-item-editor(明细编辑器)
+│   ├── inventory/             # 库存通用：warehouse-select（仓下拉，filter 模式+表单模式）
+│   ├── reports/               # 报表图表：bar-chart(纯 SVG 横向柱状+formatMoney) / line-chart / report-panel(分组+打印)
 │   └── finance/                 # 财务通用：欠款汇总列表(kind 区分应收应付) / 收付款登记对话框
 ├── lib/                     # api-client / types / use-paged-list(支持 filters)
 └── storage/database/        # supabase-client.ts + shared/schema.ts
-db/migrations/               # 版本化 SQL（0001 基础+认证 / 0002 采购 / 0003 销售 / 0004 库存 / 0005 财务 / 0006 采购 V2 五单+审批+成本+冲回 / 0007 销售 V2 出库+退货+等级报价）
+db/migrations/               # 版本化 SQL（0001 基础+认证 / 0002 采购 / 0003 销售 / 0004 库存 / 0005 财务 / 0006 采购 V2 五单+审批+成本+冲回 / 0007 销售 V2 出库+退货+等级报价 / 0008 库存 V2 多仓+批次+调拨+盘点+预警 / 0009 周边：系统字典 dict_* + 计量单位 md_units）
 scripts/seed-dev.ts          # DEV 测试账号种子
 ```
 

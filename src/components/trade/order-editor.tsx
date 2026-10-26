@@ -10,6 +10,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Textarea } from '@/components/ui/textarea';
+import { WarehouseSelect } from '@/components/inventory/warehouse-select';
 import {
   Select,
   SelectContent,
@@ -99,6 +100,7 @@ export function OrderEditor({ kind, mode, initial, onSaved, onCancel }: OrderEdi
   const [partyId, setPartyId] = useState(initial ? readPartyId(initial, cfg.partyIdField) : '');
   const [orderDate, setOrderDate] = useState(initial?.order_date ?? '');
   const [remark, setRemark] = useState(initial?.remark ?? '');
+  const [warehouseId, setWarehouseId] = useState(initial?.warehouse_id ?? '');
   const [items, setItems] = useState<EditableItem[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const keyRef = useRef(1);
@@ -220,6 +222,7 @@ export function OrderEditor({ kind, mode, initial, onSaved, onCancel }: OrderEdi
       const payload: Record<string, unknown> = {
         order_date: orderDate || undefined,
         remark: remark.trim() || undefined,
+        warehouse_id: warehouseId || undefined,
         items: items.map((item) => ({
           product_id: item.productId,
           quantity: Number(item.quantity),
@@ -277,7 +280,17 @@ export function OrderEditor({ kind, mode, initial, onSaved, onCancel }: OrderEdi
             <Label>下单日期 *</Label>
             <Input type="date" value={orderDate} onChange={(e) => setOrderDate(e.target.value)} />
           </div>
-          <div className="space-y-1.5 sm:col-span-2">
+          <div className="space-y-1.5">
+            <Label>{kind === 'purchase' ? '收货仓库' : '发货仓库'}</Label>
+            <WarehouseSelect
+              value={warehouseId}
+              onChange={setWarehouseId}
+              placeholder="默认仓库"
+              allowEmpty
+              emptyLabel="默认仓库"
+            />
+          </div>
+          <div className="space-y-1.5">
             <Label>备注</Label>
             <Textarea
               value={remark}

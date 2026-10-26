@@ -60,6 +60,8 @@ export interface PurchaseOrderView {
   approved_by_name: string | null;
   approved_at: string | null;
   reject_reason: string | null;
+  /** 收货仓库（可空，空=默认仓 WH01） */
+  warehouse_id: string | null;
   items?: PurchaseOrderItemView[];
 }
 
@@ -84,6 +86,8 @@ export const orderUpsertSchema = z.object({
   remark: z.string().max(500, '备注不能超过 500 字').optional(),
   /** 来源采购申请单（申请单转入时携带） */
   requisition_id: uuid.optional(),
+  /** 收货仓库（可空，空=默认仓 WH01） */
+  warehouse_id: uuid.nullish(),
   items: z.array(itemSchema).min(1, '至少需要一行明细').max(200, '明细行过多'),
 });
 export type OrderUpsertInput = z.infer<typeof orderUpsertSchema>;
@@ -133,6 +137,7 @@ function serialize(
     approved_by_name: extra.approverName ?? null,
     approved_at: row.approved_at ? new Date(row.approved_at).toISOString() : null,
     reject_reason: row.reject_reason,
+    warehouse_id: row.warehouse_id ?? null,
     items: extra.items,
   };
 }
@@ -347,6 +352,7 @@ export async function createOrder(input: OrderUpsertInput, operatorId: string): 
         total_amount: total,
         remark,
         requisition_id: input.requisition_id ?? null,
+        warehouse_id: input.warehouse_id ?? null,
         created_by: operatorId,
         status: 'draft',
       })
@@ -385,6 +391,7 @@ export async function updateOrder(id: string, input: OrderUpsertInput): Promise<
       supplier_id: input.supplier_id,
       order_date: input.order_date ?? existing.order_date,
       remark: emptyToNull(input.remark),
+      warehouse_id: input.warehouse_id ?? existing.warehouse_id,
       total_amount: total,
       updated_at: new Date().toISOString(),
     })

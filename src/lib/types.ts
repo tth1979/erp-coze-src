@@ -61,6 +61,8 @@ export interface Product {
   area_per_box: string | null;
   reference_purchase_price: string | null;
   reference_sale_price: string | null;
+  /** 安全库存阈值（库存预警用） */
+  safety_stock: string | null;
   status: string;
   remark: string | null;
   created_at: string;
@@ -88,6 +90,8 @@ export interface OverviewStats {
   inventory?: {
     tracked_kinds: number;
     out_of_stock: number;
+    /** 命中安全库存预警的品项数 */
+    alerts: number;
   };
   finance?: {
     receivable_outstanding: number;
@@ -136,6 +140,9 @@ export interface PurchaseOrder {
   approved_at: string | null;
   approved_by_name: string | null;
   reject_reason: string | null;
+  /** 收货/发货仓库（空=默认仓） */
+  warehouse_id?: string | null;
+  warehouse_name?: string | null;
   items?: PurchaseOrderItem[];
   steps?: ApprovalStep[];
 }
@@ -291,6 +298,9 @@ export interface SalesOrder {
   cancelled_at: string | null;
   created_at: string;
   updated_at: string;
+  /** 发货仓库（空=默认仓） */
+  warehouse_id?: string | null;
+  warehouse_name?: string | null;
   items?: SalesOrderItem[];
   steps?: ApprovalStep[];
 }
@@ -392,7 +402,17 @@ export interface StockItem {
   sku_code: string | null;
   spec: string | null;
   unit: string | null;
+  /** 所属仓库 */
+  warehouse_id: string;
+  warehouse_name: string | null;
+  /** 现有量（实物在库） */
   quantity: number;
+  /** 在途量（调拨调出未收货） */
+  in_transit: number;
+  /** 冻结量（不可用） */
+  frozen_quantity: number;
+  /** 可用量 = 现有 − 冻结 */
+  available: number;
   /** 移动加权平均成本 */
   avg_cost: number;
   /** 库存货值 */
@@ -407,10 +427,16 @@ export interface StockMovement {
   product_name: string;
   sku_code: string | null;
   unit: string | null;
+  /** 发生仓库 */
+  warehouse_id: string | null;
+  warehouse_name: string | null;
+  /** 关联批次（入库产生/出库 FIFO 消耗） */
+  batch_id: string | null;
+  batch_no: string | null;
   type: string;
   quantity: number;
   balance: number;
-  /** purchase_in | sales_out | purchase_return | receipt_reversal | manual */
+  /** purchase_in | sales_out | purchase_return | receipt_reversal | transfer_out | transfer_in | check_in | check_out | manual */
   source: string;
   ref_no: string | null;
   remark: string | null;
@@ -418,6 +444,125 @@ export interface StockMovement {
   unit_cost: number | null;
   created_by_name: string | null;
   created_at: string;
+}
+
+/** 仓库 */
+export interface InvWarehouse {
+  id: string;
+  code: string;
+  name: string;
+  address: string | null;
+  is_active: boolean;
+  created_at: string;
+}
+
+/** 库存批次（批号 = 来源入库单号） */
+export interface InvBatch {
+  id: string;
+  product_id: string;
+  product_name: string;
+  sku_code: string | null;
+  unit: string | null;
+  warehouse_id: string;
+  warehouse_name: string | null;
+  batch_no: string;
+  /** 入库单价（成本口径） */
+  unit_cost: number;
+  initial_quantity: number;
+  remaining_quantity: number;
+  production_date: string | null;
+  expiry_date: string | null;
+  source_ref: string | null;
+  created_at: string;
+}
+
+/** 库存预警条目（跨仓可用合计 ≤ 安全库存） */
+export interface InvAlert {
+  product_id: string;
+  product_name: string;
+  sku_code: string | null;
+  spec: string | null;
+  unit: string | null;
+  safety_stock: number;
+  total_quantity: number;
+  total_available: number;
+  total_in_transit: number;
+}
+
+/** 库存调拨单（IT） */
+export interface InvTransfer {
+  id: string;
+  transfer_no: string;
+  from_warehouse_id: string;
+  from_warehouse_name: string | null;
+  to_warehouse_id: string;
+  to_warehouse_name: string | null;
+  status: string;
+  remark: string | null;
+  approval_level: number | null;
+  current_step: number | null;
+  submitted_by: string | null;
+  submitted_at: string | null;
+  approved_by: string | null;
+  approved_at: string | null;
+  reject_reason: string | null;
+  received_at: string | null;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+  items?: InvTransferItem[];
+  steps?: ApprovalStep[];
+}
+
+export interface InvTransferItem {
+  id: string;
+  product_id: string;
+  product_name: string;
+  sku_code: string | null;
+  unit: string | null;
+  quantity: number;
+  /** 调出时移动加权成本快照 */
+  unit_cost: number | null;
+  remark: string | null;
+}
+
+/** 库存盘点单（IC） */
+export interface InvCheck {
+  id: string;
+  check_no: string;
+  warehouse_id: string;
+  warehouse_name: string | null;
+  status: string;
+  remark: string | null;
+  approval_level: number | null;
+  current_step: number | null;
+  submitted_by: string | null;
+  submitted_at: string | null;
+  approved_by: string | null;
+  approved_at: string | null;
+  reject_reason: string | null;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+  items?: InvCheckItem[];
+  steps?: ApprovalStep[];
+}
+
+export interface InvCheckItem {
+  id: string;
+  product_id: string;
+  product_name: string;
+  sku_code: string | null;
+  unit: string | null;
+  /** 账面数量（建单快照） */
+  book_quantity: number;
+  /** 实盘数量 */
+  counted_quantity: number;
+  /** 差异 = 实盘 − 账面（终审过账后写入） */
+  difference: number | null;
+  /** 差异过账成本口径快照 */
+  unit_cost: number | null;
+  remark: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -466,4 +611,70 @@ export interface PayableRow {
   billed: number;
   paid: number;
   outstanding: number;
+}
+
+// ============================================================
+// 经营统计报表（report_*）
+// ============================================================
+
+export interface TrendPoint {
+  month: string;
+  purchase: number;
+  sales: number;
+  gross_profit: number;
+}
+
+export interface ReportOverview {
+  cards: {
+    purchase_total: number;
+    sales_total: number;
+    gross_profit: number;
+    receivable_outstanding: number;
+    payable_outstanding: number;
+    inventory_value: number;
+    inventory_kinds: number;
+  };
+  buckets: Array<{ label: string; purchase: number; sales: number; gross_profit: number }>;
+  trends: TrendPoint[];
+}
+
+export interface ReportRow {
+  key: string;
+  name: string;
+  amount: number;
+  order_count?: number;
+}
+
+// ============================================================
+// 系统数据字典（dict_*）+ 计量单位（md_units）
+// ============================================================
+
+export interface DictTypeView {
+  id: string;
+  type_code: string;
+  name: string;
+  description: string | null;
+  is_system: boolean;
+  is_active: boolean;
+  sort: number;
+}
+
+export interface DictItemView {
+  id: string;
+  type_code: string;
+  item_code: string;
+  label: string;
+  extra: Record<string, unknown> | null;
+  sort: number;
+  is_active: boolean;
+}
+
+export interface MdUnit {
+  id: string;
+  unit_code: string;
+  unit_name: string;
+  base_unit: string;
+  conversion_ratio: string;
+  remark: string | null;
+  is_active: boolean;
 }

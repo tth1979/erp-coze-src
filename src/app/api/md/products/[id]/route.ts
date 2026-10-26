@@ -18,6 +18,7 @@ const updateSchema = z.object({
   area_per_box: z.number().min(0).nullish(),
   reference_purchase_price: z.number().min(0).nullish(),
   reference_sale_price: z.number().min(0).nullish(),
+  safety_stock: z.number().min(0).nullish(),
   status: z.enum(['active', 'disabled']).optional(),
   remark: z.string().max(2000).nullish(),
 });

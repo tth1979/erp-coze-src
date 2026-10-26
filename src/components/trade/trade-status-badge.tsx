@@ -86,3 +86,22 @@ export const SALES_RETURN_STATUS_OPTIONS = [
 
 /** 兼容旧引用（销售模块仍使用） */
 export const TRADE_STATUS_OPTIONS = SALES_STATUS_OPTIONS;
+
+/** 库存调拨单状态过滤选项（received = 已收货） */
+export const TRANSFER_STATUS_OPTIONS = [
+  { value: 'draft', label: '草稿' },
+  { value: 'pending', label: '待审批' },
+  { value: 'approved', label: '已调出（在途）' },
+  { value: 'received', label: '已收货' },
+  { value: 'rejected', label: '已驳回' },
+  { value: 'closed', label: '已关闭' },
+];
+
+/** 库存盘点单状态过滤选项（approved = 差异已过账） */
+export const CHECK_STATUS_OPTIONS = [
+  { value: 'draft', label: '草稿' },
+  { value: 'pending', label: '待审批' },
+  { value: 'approved', label: '已过账' },
+  { value: 'rejected', label: '已驳回' },
+  { value: 'closed', label: '已关闭' },
+];

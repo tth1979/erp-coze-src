@@ -7,8 +7,8 @@
  * 角色匹配：step.approver_role = 'manager' 时 manager/admin 可审；'admin' 仅 admin 可审。
  * 终态处理：
  * - requisition / order / sales_order → 审批完成直接置 approved
- * - receipt / return / shipment / sales_return → 调数据库函数
- *   （单事务完成状态流转 + 库存 + 流水 + 成本，库存不足整单回滚）
+ * - receipt / return / shipment / sales_return / transfer / check → 调数据库函数
+ *   （单事务完成状态流转 + 库存 + 台账 + 成本，库存不足整单回滚）
  */
 import { ApiError } from '@/server/http';
 import { throwInventoryRpcError } from '@/server/inventory/shared';
@@ -23,7 +23,9 @@ export type ApprovalDocType =
   | 'return'
   | 'sales_order'
   | 'shipment'
-  | 'sales_return';
+  | 'sales_return'
+  | 'transfer'
+  | 'check';
 
 const DOC_TABLE: Record<ApprovalDocType, string> = {
   requisition: 'po_requisitions',
@@ -33,6 +35,8 @@ const DOC_TABLE: Record<ApprovalDocType, string> = {
   sales_order: 'so_sales_orders',
   shipment: 'so_shipments',
   sales_return: 'so_returns',
+  transfer: 'inv_transfers',
+  check: 'inv_checks',
 };
 
 const DOC_NAME: Record<ApprovalDocType, string> = {
@@ -43,6 +47,8 @@ const DOC_NAME: Record<ApprovalDocType, string> = {
   sales_order: '销售订单',
   shipment: '销售出库单',
   sales_return: '销售退货单',
+  transfer: '库存调拨单',
+  check: '库存盘点单',
 };
 
 /** 终审通过后需由数据库函数完成库存/成本流转的单据 → 函数名与参数名 */
@@ -51,6 +57,8 @@ const EXECUTE_RPC: Partial<Record<ApprovalDocType, { fn: string; param: string }
   return: { fn: 'po_execute_return', param: 'p_return_id' },
   shipment: { fn: 'so_execute_shipment', param: 'p_shipment_id' },
   sales_return: { fn: 'so_execute_return', param: 'p_return_id' },
+  transfer: { fn: 'inv_execute_transfer', param: 'p_transfer_id' },
+  check: { fn: 'inv_execute_check', param: 'p_check_id' },
 };
 
 export interface ApprovalStepView {

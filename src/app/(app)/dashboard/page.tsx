@@ -4,9 +4,10 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { ArrowRight, Boxes, HandCoins, Package, Receipt, ShoppingCart, Truck, Users, Wallet } from 'lucide-react';
 import { apiFetch } from '@/lib/api-client';
-import type { OverviewStats } from '@/lib/types';
+import type { OverviewStats, ReportOverview } from '@/lib/types';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Skeleton } from '@/components/ui/skeleton';
+import LineChart, { formatMoney } from '@/components/reports/line-chart';
 
 const CARDS = [
   { key: 'customers', title: '客户档案', href: '/master-data/customers', icon: Users },
@@ -16,11 +17,13 @@ const CARDS = [
 
 export default function DashboardPage() {
   const [stats, setStats] = useState<OverviewStats | null>(null);
+  const [report, setReport] = useState<ReportOverview | null>(null);
 
   useEffect(() => {
     apiFetch<OverviewStats>('/api/stats/overview')
       .then(setStats)
       .catch(() => setStats({ customers: 0, suppliers: 0, products: 0 }));
+    apiFetch<ReportOverview>('/api/report/overview').then(setReport).catch(() => setReport(null));
   }, []);
 
   const po = stats?.purchase_orders;
@@ -129,6 +132,9 @@ export default function DashboardPage() {
                   ) : (
                     <span className="text-muted-foreground">暂无缺货品项</span>
                   )}
+                  {(inv.alerts ?? 0) > 0 ? (
+                    <span className="ml-2 font-medium text-amber-600">预警 {inv.alerts} 项</span>
+                  ) : null}
                 </p>
               </>
             ) : (
@@ -141,6 +147,15 @@ export default function DashboardPage() {
               查看库存
               <ArrowRight className="h-3.5 w-3.5" />
             </Link>
+            {(inv?.alerts ?? 0) > 0 ? (
+              <Link
+                href="/inventory/alerts"
+                className="mt-2 ml-3 inline-flex items-center gap-1 text-sm text-amber-700 hover:underline"
+              >
+                库存预警
+                <ArrowRight className="h-3.5 w-3.5" />
+              </Link>
+            ) : null}
           </CardContent>
         </Card>
 
@@ -190,6 +205,75 @@ export default function DashboardPage() {
           </CardContent>
         </Card>
       </div>
+
+      {/* 经营统计：核心指标卡 */}
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4 print:grid-cols-4">
+        {(
+          [
+            { label: '采购总额', value: report?.cards.purchase_total, sub: '累计已入库' },
+            { label: '销售总额', value: report?.cards.sales_total, sub: '累计已出库（净额）' },
+            { label: '毛利', value: report?.cards.gross_profit, sub: '销售 − 出库成本' },
+            { label: '库存总值', value: report?.cards.inventory_value, sub: `${report?.cards.inventory_kinds ?? 0} 个品项` },
+            { label: '应收余额', value: report?.cards.receivable_outstanding, sub: '销售 − 收款' },
+            { label: '应付余额', value: report?.cards.payable_outstanding, sub: '采购 − 付款' },
+          ] as Array<{ label: string; value: number | undefined; sub: string }>
+        ).map((m) => (
+          <Card key={m.label}>
+            <CardHeader className="flex flex-row items-center justify-between pb-2">
+              <CardTitle className="text-sm font-medium text-muted-foreground">{m.label}</CardTitle>
+            </CardHeader>
+            <CardContent>
+              {m.value !== undefined ? (
+                <>
+                  <p className="text-2xl font-semibold tabular-nums">{formatMoney(m.value)}</p>
+                  <p className="mt-1 text-xs text-muted-foreground">{m.sub}</p>
+                </>
+              ) : (
+                <Skeleton className="h-8 w-28" />
+              )}
+            </CardContent>
+          </Card>
+        ))}
+      </div>
+
+      {/* 经营统计：今日/本月/累计 + 12 月趋势 */}
+      {report && (
+        <Card>
+          <CardHeader className="flex flex-wrap items-center justify-between gap-2 print:hidden">
+            <CardTitle className="text-sm font-medium">采购 / 销售 / 毛利趋势（近 12 个月）</CardTitle>
+            <div className="flex flex-wrap gap-2">
+              {report.buckets.map((b) => (
+                <span key={b.label} className="rounded-md bg-muted px-2.5 py-1 text-xs text-muted-foreground tabular-nums">
+                  {b.label}：购 {formatMoney(b.purchase)} · 销 {formatMoney(b.sales)}
+                </span>
+              ))}
+            </div>
+          </CardHeader>
+          <CardContent>
+            <LineChart
+              labels={report.trends.map((t) => t.month)}
+              series={[
+                { name: '采购', color: '#0284c7', values: report.trends.map((t) => t.purchase) },
+                { name: '销售', color: '#c2410c', values: report.trends.map((t) => t.sales) },
+                { name: '毛利', color: '#16a34a', values: report.trends.map((t) => t.gross_profit) },
+              ]}
+            />
+            <div className="mt-3 flex flex-wrap gap-3 border-t pt-3 text-sm print:hidden">
+              {[
+                { href: '/reports/purchase', label: '采购报表' },
+                { href: '/reports/sales', label: '销售报表' },
+                { href: '/reports/inventory', label: '库存报表' },
+                { href: '/reports/overview', label: '汇总打印' },
+              ].map((r) => (
+                <Link key={r.href} href={r.href} className="inline-flex items-center gap-1 text-sm text-primary hover:underline">
+                  {r.label}
+                  <ArrowRight className="h-3.5 w-3.5" />
+                </Link>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardHeader>
