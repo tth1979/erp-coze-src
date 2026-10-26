@@ -75,7 +75,12 @@ function LoginForm() {
             />
           </div>
           {error ? (
-            <p className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</p>
+            <div className="space-y-1">
+              <p className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</p>
+              <p className="text-xs text-muted-foreground">
+                提示：密码区分大小写；如为复制粘贴，请确认没有带入多余空格或换行。
+              </p>
+            </div>
           ) : null}
           <Button type="submit" className="w-full" disabled={submitting}>
             {submitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}

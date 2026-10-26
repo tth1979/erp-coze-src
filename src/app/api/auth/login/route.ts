@@ -11,7 +11,8 @@ const loginSchema = z.object({
   type: z.literal('password'),
   payload: z.object({
     username: z.string().trim().min(1, '用户名不能为空'),
-    password: z.string().min(1, '密码不能为空'),
+    // 系统密码均为无空格随机串/用户自设口令，trim 以避免复制粘贴带入空白字符导致误判
+    password: z.string().trim().min(1, '密码不能为空'),
   }),
 });
 
