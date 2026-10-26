@@ -117,6 +117,8 @@ export default function StockPage() {
                   <TableHead>规格</TableHead>
                   <TableHead className="text-right">库存数量</TableHead>
                   <TableHead>单位</TableHead>
+                  <TableHead className="text-right">移动均价</TableHead>
+                  <TableHead className="text-right">库存货值</TableHead>
                   <TableHead>状态</TableHead>
                   <TableHead>最近变动</TableHead>
                 </TableRow>
@@ -134,6 +136,12 @@ export default function StockPage() {
                         {formatQty(qty)}
                       </TableCell>
                       <TableCell className="text-stone-600">{row.unit ?? '—'}</TableCell>
+                      <TableCell className="text-right tabular-nums text-stone-600">
+                        ¥{Number(row.avg_cost ?? 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums text-stone-600">
+                        ¥{Number(row.total_cost ?? 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </TableCell>
                       <TableCell>
                         <span
                           className={`inline-flex items-center rounded border px-1.5 py-0.5 text-xs ${

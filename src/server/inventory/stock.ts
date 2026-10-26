@@ -18,6 +18,10 @@ export interface StockRow {
   spec: string | null;
   unit: string | null;
   quantity: string;
+  /** 移动加权平均成本（采购 V2 起随入库更新） */
+  avg_cost: string;
+  /** 库存货值 = Σ 各次入库成本 − 出库成本 */
+  total_cost: string;
   updated_at: string;
 }
 
@@ -50,6 +54,8 @@ export async function listStock(query: ListQuery): Promise<PagedResult<StockRow>
       `
       product_id,
       quantity,
+      avg_cost,
+      total_cost,
       updated_at,
       product:md_products!inner (
         name,
@@ -82,6 +88,8 @@ export async function listStock(query: ListQuery): Promise<PagedResult<StockRow>
       spec: product.spec ?? null,
       unit: product.unit ?? null,
       quantity: String(row.quantity),
+      avg_cost: String(row.avg_cost ?? 0),
+      total_cost: String(row.total_cost ?? 0),
       updated_at: row.updated_at as string,
     };
   });
@@ -101,6 +109,8 @@ export interface MovementRow {
   source: string;
   ref_no: string | null;
   remark: string | null;
+  /** 本次出入库的单价/成本快照（入库=实际单价，出库=加权均价） */
+  unit_cost: string | null;
   created_by_name: string | null;
   created_at: string;
 }
@@ -150,6 +160,7 @@ export async function listMovements(query: MovementListQuery): Promise<PagedResu
       source,
       ref_no,
       remark,
+      unit_cost,
       created_by,
       created_at,
       product:md_products!inner ( name, sku_code, unit )
@@ -193,6 +204,7 @@ export async function listMovements(query: MovementListQuery): Promise<PagedResu
       source: row.source as string,
       ref_no: (row.ref_no as string | null) ?? null,
       remark: (row.remark as string | null) ?? null,
+      unit_cost: row.unit_cost === null || row.unit_cost === undefined ? null : String(row.unit_cost),
       created_by_name: createdBy ? (creatorMap.get(createdBy) ?? null) : null,
       created_at: row.created_at as string,
     };

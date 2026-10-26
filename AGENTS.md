@@ -50,7 +50,7 @@
 | --- | --- | --- |
 | 系统模块 | `sys_*` | 用户、凭证、会话、角色权限 |
 | 基础资料模块 | `md_*` | 客户、供应商、商品主数据 |
-| 采购模块（已交付 MVP） | `po_*` | 采购订单 + 明细，状态机 draft→confirmed→completed / cancelled |
+| 采购模块（已交付 V2） | `po_*` | 五单主链路：申请单(审批)→订单(审批)→入库单(暂估/冲回)→退货单；四级审批引擎；入库即库存+移动加权成本 |
 | 销售模块（已交付 MVP） | `so_*` | 销售订单 + 明细，状态机同采购 |
 | 库存模块（已交付 MVP） | `inv_*` | 库存余额 + 只追加流水台账，采购到货入库 / 销售发货出库 |
 | 财务模块（已交付 MVP） | `fin_*` | 应收/应付欠款汇总 + 收付款单（超额拦截）+ 流水台账 |
@@ -62,7 +62,8 @@
 
 - **数据模型**：`sys_users`（用户主体+role 枚举）/ `sys_user_credentials`（凭证抽象，新增登录方式=新增 type）/ `sys_sessions`（会话）。
 - **登录**：POST `/api/auth/login` `{type:'password', payload:{username,password}}` → httpOnly Cookie `erp_session`。
-- **权限模型**：角色 → 权限点映射在 `src/server/auth/permissions.ts`（admin=`*`，manager=读写，staff=只读）。
+- **权限模型**：角色 → 权限点映射在 `src/server/auth/permissions.ts`（admin=`*`，manager=读写+`po.approve`，staff=只读）。
+- **DEV 审批冒烟账号**：`dev_manager@coze.dev`（manager，密码 manager123456）、`dev_user@coze.dev`（staff）。
   API 层用 `requireAuth(request)` / `requirePermission(auth, 'md.write')` 做守卫；前端 `useAuth().can()` 控制菜单/按钮显隐。
 - **升级路径**：T3 完整 RBAC（roles/permissions/role_permissions/user_roles 四表）为单向加表升级，见 `src/server/auth/permissions.ts` 注释。
 - **DEV 测试账号**：`pnpm tsx scripts/seed-dev.ts`（仅 DEV 可执行，密码运行时随机生成、只打印控制台）。staff 角色冒烟账号为 `dev_user@coze.dev`（种子生成；密码需自设，可用临时脚本调 `hashPassword` 更新 `sys_user_credentials.secret_hash`）。
@@ -81,11 +82,24 @@
 | GET/PUT/DELETE | /api/md/suppliers/[id] | 同上 | 供应商 |
 | GET/POST | /api/md/products | 同上 | 商品主数据（型号/规格/单位/条形码） |
 | GET/PUT/DELETE | /api/md/products/[id] | 同上 | 商品 |
-| GET/POST | /api/po/orders | po.read / po.write | 采购订单分页列表（支持 status 筛选）/ 新建（草稿） |
-| GET/PUT/DELETE | /api/po/orders/[id] | po.read / po.write | 订单详情（含明细）/ 更新 / 删除（仅 draft） |
-| POST | /api/po/orders/[id]/confirm | po.write | 确认订单（draft→confirmed） |
-| POST | /api/po/orders/[id]/cancel | po.write | 取消订单（draft/confirmed→cancelled） |
-| POST | /api/po/orders/[id]/complete | po.write | 到货入库（confirmed→completed，联动库存） |
+| GET/POST | /api/po/orders | po.read / po.write | 采购订单分页列表（status 筛选）/ 新建（草稿） |
+| GET/PUT/DELETE | /api/po/orders/[id] | po.read / po.write | 订单详情（含明细+审批步骤）/ 更新（draft/rejected）/ 删除（仅 draft） |
+| POST | /api/po/orders/[id]/submit | po.write | 提交审批（draft/rejected→pending，按金额定级） |
+| POST | /api/po/orders/[id]/approve | po.approve | 审批通过当前步（角色须匹配步骤） |
+| POST | /api/po/orders/[id]/reject | po.approve | 驳回当前步（→rejected） |
+| POST | /api/po/orders/[id]/cancel | po.write | 关闭订单（draft/pending/rejected→closed） |
+| POST | /api/po/orders/[id]/complete | po.write | 一键到货入库（approved→received，自动生成已审正式入库单 GR，防重复入库） |
+| GET/POST | /api/po/requisitions | po.read / po.write | 采购申请单列表 / 新建（PR 单号，估算总额） |
+| GET/DELETE | /api/po/requisitions/[id] | po.read / po.write | 申请单详情（含步骤）/ 删除（draft/rejected） |
+| POST | /api/po/requisitions/[id]/submit、approve、reject | po.write / po.approve | 申请单审批动作 |
+| POST | /api/po/requisitions/[id]/convert | po.write | 已审申请单转采购订单（申请单→closed，生成 draft 订单） |
+| GET/POST | /api/po/receipts | po.read / po.write | 入库单列表 / 从已审订单创建（GR 单号，is_estimated 暂估） |
+| GET/DELETE | /api/po/receipts/[id] | po.read / po.write | 入库单详情 / 删除（draft/rejected） |
+| POST | /api/po/receipts/[id]/submit、approve、reject | po.write / po.approve | 入库单审批（终审通过=入库，单事务） |
+| POST | /api/po/receipts/[id]/reverse | po.write | 暂估冲回（红字 GRR 冲销 + 蓝字 GRB 按发票价重入，单事务） |
+| GET/POST | /api/po/returns | po.read / po.write | 退货单列表 / 新建（RT 单号） |
+| GET/DELETE | /api/po/returns/[id] | po.read / po.write | 退货单详情 / 删除（draft/rejected） |
+| POST | /api/po/returns/[id]/submit、approve、reject | po.write / po.approve | 退货单审批（终审通过=出库，库存不足整单 400） |
 | GET/POST | /api/so/orders | so.read / so.write | 销售订单分页列表 / 新建（草稿） |
 | GET/PUT/DELETE | /api/so/orders/[id] | so.read / so.write | 订单详情 / 更新 / 删除（仅 draft） |
 | POST | /api/so/orders/[id]/confirm | so.write | 确认订单（draft→confirmed） |
@@ -102,13 +116,17 @@
 
 分页参数：`page`(≥1) `pageSize`(1-100) `keyword`（模糊搜索）；响应 `{ items, total, page, page_size }`。
 
-### 采购模块约定（po_*）
+### 采购模块约定（po_*，V2 五单主链路）
 
-- **表**：`po_purchase_orders`（单头：order_no 唯一、supplier_id FK、status、order_date、total_amount、created_by）+ `po_purchase_order_items`（明细：order_id FK cascade、product_id FK、quantity/unit_price/amount、unit 快照）。
-- **单号**：`POyyyymmdd-NNNN`，按当日数量+1 生成，唯一约束冲突（23505）重试一次。
-- **金额**：一律服务端按明细 `quantity × unit_price` 计算行金额与总额，不信任客户端传值。
-- **状态机**：仅 `draft` 可编辑/删除；`confirmed` 不可再改明细；`completed` 由"到货入库"（complete）流转，同时联动库存入账。
-- **补偿式写入**：Supabase SDK 无多语句事务，"单头+明细"写入采用补偿模式（明细插入失败则删除单头），见 `src/server/purchase/orders.ts` 头注释；后续可迁移存储过程。
+- **五单**：申请单 `po_requisitions`(PR) → 订单 `po_purchase_orders`(PO) → 入库单 `po_receipts`(GR；红蓝冲回 GRR/GRB) → 退货单 `po_returns`(RT)；明细表均为 `_items`（order_id 类 FK cascade + product_id FK + unit 快照，金额服务端重算）。
+- **统一状态机**：`draft`(草稿) → `pending`(待审) → `approved`(已审) / `rejected`(驳回，可编辑重提) → 业务终态：订单 `received`(已入库)、入库单 approved 即入库、原暂估单冲回后 `reversed`；`draft/pending/rejected` 可 `closed`(关闭)。仅 `draft` 可删，`draft/rejected` 可编辑。
+- **状态映射（0006 迁移）**：旧订单数据 confirmed→approved、completed→received、cancelled→closed；销售模块状态机不变（仍 confirmed/completed/cancelled）。
+- **四级审批引擎**（`src/server/purchase/approval.ts`）：规则表 `po_approval_rules`(doc_type+level+金额区间) + `po_approval_rule_steps`(step_no+approver_role)，实例表 `po_approval_steps`（doc_type+doc_id 多态，不建 FK）。提交时按金额命中规则生成步骤实例（申请/订单四级：≤5k/≤50k 一级 manager，≤200k/>200k 两级 manager→admin；入库/退货默认一级 manager）。改规则表即可重配级数与角色。审批角色匹配：步骤角色=manager 时 manager/admin 可审，=admin 时仅 admin；权限点 `po.approve`（admin、manager）。
+- **入库终审**由 plpgsql 单事务完成：`po_execute_receipt`（状态+库存+成本）、`po_execute_return`（退货出库）、`po_fulfill_order`（订单一键入库，自动生成已审正式入库单并防重复入库）、`po_reverse_receipt`（暂估红蓝冲回）。错误码沿用 P0001 库存不足 / P0400 状态错误 / P0404 不存在（`src/server/inventory/shared.ts` 映射）。
+- **移动加权成本**（雏形）：`inv_stock` 加 `avg_cost`/`total_cost`，`inv_stock_movements` 加 `unit_cost` 快照。入库 `inv_apply_receipt_in`（加权均价）、出库 `inv_apply_issue_out`（按均价减货值）；销售出库仍走旧 `inv_apply_movement` 不更新成本（成本引擎后续里程碑统一）。
+- **暂估冲回**：暂估单（is_estimated，发票未到）审批入库；来票后 `POST reverse {invoice_no, items[实际价]}` → 单事务生成红字单（按暂估价出库回冲）+蓝字单（按发票价入库重算成本），原单→reversed；红蓝金额对账平衡，净差计入应付。
+- **供应商应付口径**（fin 聚合）：Σ(订单 status∈received/completed) + Σ(蓝字−红字) − Σ(approved 退货) − Σ(付款)。
+- **单号**：PO/PR/GR/RT + `yyyymmdd-NNNN`；GRR/GRB 在数据库函数内生成。
 
 ### 库存模块约定（inv_*）
 
@@ -159,7 +177,7 @@ src/
 │   ├── http.ts              # ApiError + 统一错误处理
 │   ├── auth/                # password(scrypt)/session/permissions/guard/bootstrap
 │   ├── master-data/         # 客户/供应商/商品的查询/校验/序列化 + helpers(分页/模糊搜索)
-│   ├── purchase/            # 采购订单服务（单号生成/金额核算/状态流转/complete 入库）
+│   ├── purchase/            # 采购 V2：orders(订单) / requisitions(申请+转订单) / receipts(入库+暂估冲回) / returns(退货) / approval(四级审批引擎)
 │   ├── sales/               # 销售订单服务（镜像采购/complete 出库）
 │   ├── inventory/           # 库存服务（stock 余额查询 / movements 流水 / shared RPC 错误映射）
 │   └── finance/             # 财务服务（payments 收付款单 CRUD + 应收/应付欠款汇总 + 超额校验）
@@ -167,7 +185,7 @@ src/
 ├── app/(app)/               # 登录后区域（路由组，layout 内做守卫）
 │   ├── dashboard/           # 仪表盘（含采购/销售/库存/财务统计卡片）
 │   ├── master-data/         # customers / suppliers / products 页面
-│   ├── purchase/orders/     # 采购订单列表 / new / [id] 详情（详情页内切换编辑态，confirmed 可到货入库）
+│   ├── purchase/            # orders(订单) / requisitions(申请+convert) / receipts(入库+冲回) / returns(退货)，均列表+new+[id]
 │   ├── sales/orders/        # 销售订单列表 / new / [id] 详情（confirmed 可发货出库）
 │   ├── inventory/           # stock 库存余额 / movements 库存流水
 │   └── finance/             # receivables 应收欠款 / payables 应付欠款 / payments 收付款流水
@@ -176,10 +194,11 @@ src/
 │   ├── layout/app-shell.tsx     # 侧边栏 + 顶栏（移动端抽屉导航）
 │   ├── master-data/             # 表单对话框 / 分页 / 状态徽章 / 删除确认
 │   ├── trade/                   # 购销通用：订单编辑器(kind 区分购销) / 状态徽章 / 动作确认弹窗
+│   ├── purchase/                # 采购 V2 通用：approval-panel(审批步骤+操作) / doc-item-editor(明细编辑器)
 │   └── finance/                 # 财务通用：欠款汇总列表(kind 区分应收应付) / 收付款登记对话框
 ├── lib/                     # api-client / types / use-paged-list(支持 filters)
 └── storage/database/        # supabase-client.ts + shared/schema.ts
-db/migrations/               # 版本化 SQL（0001 基础+认证 / 0002 采购 / 0003 销售 / 0004 库存 / 0005 财务）
+db/migrations/               # 版本化 SQL（0001 基础+认证 / 0002 采购 / 0003 销售 / 0004 库存 / 0005 财务 / 0006 采购 V2 五单+审批+成本+冲回）
 scripts/seed-dev.ts          # DEV 测试账号种子
 ```
 

@@ -15,7 +15,7 @@ export const ROLES: readonly Role[] = ['admin', 'manager', 'staff'] as const;
 
 const ROLE_PERMISSIONS: Record<Role, readonly string[]> = {
   admin: ['*'],
-  manager: ['dashboard.read', 'md.read', 'md.write', 'po.read', 'po.write', 'so.read', 'so.write', 'inv.read', 'fin.read', 'fin.write'],
+  manager: ['dashboard.read', 'md.read', 'md.write', 'po.read', 'po.write', 'po.approve', 'so.read', 'so.write', 'inv.read', 'fin.read', 'fin.write'],
   staff: ['dashboard.read', 'md.read', 'po.read', 'so.read', 'inv.read', 'fin.read'],
 };
 

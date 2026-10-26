@@ -70,7 +70,7 @@ export default function DashboardPage() {
               <>
                 <p className="text-2xl font-semibold tabular-nums">{po.total}</p>
                 <p className="mt-1 text-xs text-muted-foreground tabular-nums">
-                  草稿 {po.draft} · 已确认 {po.confirmed}
+                  待审 {po.pending} · 已审 {po.approved} · 已入库 {po.received}
                 </p>
               </>
             ) : (
@@ -196,8 +196,8 @@ export default function DashboardPage() {
           <CardTitle className="text-sm font-medium">里程碑说明</CardTitle>
         </CardHeader>
         <CardContent className="text-sm leading-6 text-muted-foreground">
-          当前已交付：登录认证、角色权限雏形、基础资料（客户 / 供应商 / 商品主数据）、采购订单与销售订单（草稿 →
-          确认 → 完成，含明细行与金额核算）、库存模块（采购到货自动入库、销售发货自动出库，库存余额与流水台账可查），
+          当前已交付：登录认证、角色权限雏形、基础资料（客户 / 供应商 / 商品主数据）、采购五单主链路（申请 → 订单 →
+          入库 → 退货，含四级审批与暂估冲回）、销售订单、库存模块（自动出入库 + 移动加权成本），
           以及财务模块——应收/应付欠款按客户与供应商实时汇总，支持登记收款/付款（超额拦截）并留存收付款流水台账。
           加工、税务等模块将按里程碑迭代接入。
         </CardContent>

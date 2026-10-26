@@ -74,7 +74,9 @@ export interface OverviewStats {
   purchase_orders?: {
     total: number;
     draft: number;
-    confirmed: number;
+    pending: number;
+    approved: number;
+    received: number;
   };
   sales_orders?: {
     total: number;
@@ -112,7 +114,7 @@ export interface PurchaseOrder {
   order_no: string;
   supplier_id: string;
   supplier_name: string | null;
-  /** draft | confirmed | completed | cancelled */
+  /** draft 草稿 | pending 待审 | approved 已审 | rejected 已驳回 | received 已入库 | closed 已关闭 */
   status: string;
   order_date: string;
   total_amount: number;
@@ -123,7 +125,128 @@ export interface PurchaseOrder {
   cancelled_at: string | null;
   created_at: string;
   updated_at: string;
+  /** 来源申请单（采购 V2） */
+  requisition_id: string | null;
+  requisition_no?: string | null;
+  approval_level: number | null;
+  current_step: number;
+  submitted_at: string | null;
+  approved_at: string | null;
+  approved_by_name: string | null;
+  reject_reason: string | null;
   items?: PurchaseOrderItem[];
+  steps?: ApprovalStep[];
+}
+
+/** 审批步骤实例（采购四单通用） */
+export interface ApprovalStep {
+  step_no: number;
+  approver_role: string;
+  approver_role_label: string;
+  status: 'pending' | 'approved' | 'rejected';
+  approver_name: string | null;
+  comment: string | null;
+  acted_at: string | null;
+}
+
+/** 采购申请单 */
+export interface PoRequisition {
+  id: string;
+  req_no: string;
+  status: string;
+  reason: string | null;
+  total_estimate: number;
+  item_count: number;
+  approval_level: number | null;
+  current_step: number;
+  reject_reason: string | null;
+  converted_order_id: string | null;
+  converted_order_no?: string | null;
+  remark: string | null;
+  created_by_name: string | null;
+  submitted_at?: string | null;
+  approved_at?: string | null;
+  created_at: string;
+  items?: Array<{
+    id: string;
+    product_id: string;
+    product_name: string | null;
+    product_sku: string | null;
+    quantity: number;
+    suggest_price: number;
+    amount: number;
+    unit: string | null;
+  }>;
+  steps?: ApprovalStep[];
+}
+
+/** 采购入库单（reversal_kind: red 红字冲回 | blue 蓝字重入） */
+export interface PoReceipt {
+  id: string;
+  receipt_no: string;
+  order_id: string;
+  order_no: string | null;
+  supplier_id: string;
+  supplier_name: string | null;
+  status: string;
+  is_estimated: boolean;
+  invoice_no: string | null;
+  reversal_of_id: string | null;
+  reversal_kind: 'red' | 'blue' | null;
+  total_amount: number;
+  receive_date: string;
+  item_count: number;
+  approval_level: number | null;
+  current_step: number;
+  reject_reason: string | null;
+  remark: string | null;
+  created_by_name: string | null;
+  created_at: string;
+  items?: Array<{
+    id: string;
+    product_id: string;
+    product_name: string | null;
+    product_sku: string | null;
+    quantity: number;
+    unit_price: number;
+    amount: number;
+    unit: string | null;
+  }>;
+  steps?: ApprovalStep[];
+}
+
+/** 采购退货单 */
+export interface PoReturn {
+  id: string;
+  return_no: string;
+  order_id: string | null;
+  order_no: string | null;
+  receipt_id: string | null;
+  receipt_no: string | null;
+  supplier_id: string;
+  supplier_name: string | null;
+  status: string;
+  reason: string | null;
+  total_amount: number;
+  return_date: string;
+  item_count: number;
+  approval_level: number | null;
+  current_step: number;
+  reject_reason: string | null;
+  remark: string | null;
+  created_by_name: string | null;
+  created_at: string;
+  items?: Array<{
+    id: string;
+    product_id: string;
+    product_name: string | null;
+    product_sku: string | null;
+    quantity: number;
+    unit_price: number;
+    amount: number;
+    unit: string | null;
+  }>;
+  steps?: ApprovalStep[];
 }
 
 // ---------------------------------------------------------------------------
@@ -179,6 +302,10 @@ export interface StockItem {
   spec: string | null;
   unit: string | null;
   quantity: number;
+  /** 移动加权平均成本 */
+  avg_cost: number;
+  /** 库存货值 */
+  total_cost: number;
   updated_at: string;
 }
 
@@ -192,10 +319,12 @@ export interface StockMovement {
   type: string;
   quantity: number;
   balance: number;
-  /** purchase_in | sales_out | manual */
+  /** purchase_in | sales_out | purchase_return | receipt_reversal | manual */
   source: string;
   ref_no: string | null;
   remark: string | null;
+  /** 本次单价/成本快照（入库=单价，出库=加权均价） */
+  unit_cost: number | null;
   created_by_name: string | null;
   created_at: string;
 }

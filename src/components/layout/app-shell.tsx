@@ -6,15 +6,18 @@ import { usePathname, useRouter } from 'next/navigation';
 import {
   Boxes,
   ClipboardList,
+  FileSignature,
   HandCoins,
   LayoutDashboard,
   Layers,
   LogOut,
   Menu,
   Package,
+  PackageCheck,
   Receipt,
   ShoppingCart,
   Truck,
+  Undo2,
   Users,
   Wallet,
   X,
@@ -60,7 +63,10 @@ const NAV: NavGroup[] = [
   {
     group: '采购管理',
     items: [
+      { title: '采购申请', href: '/purchase/requisitions', icon: FileSignature, permission: 'po.read' },
       { title: '采购订单', href: '/purchase/orders', icon: ShoppingCart, permission: 'po.read' },
+      { title: '采购入库单', href: '/purchase/receipts', icon: PackageCheck, permission: 'po.read' },
+      { title: '采购退货单', href: '/purchase/returns', icon: Undo2, permission: 'po.read' },
     ],
   },
   {

@@ -1,9 +1,12 @@
 /**
- * 采购订单服务端逻辑（po_*）
+ * 采购订单服务端逻辑（po_*，采购 V2）
  *
- * 状态机：draft → confirmed → completed（库存里程碑接入到货后流转）
- *                ↘ cancelled（draft/confirmed 可取消）
- * 仅 draft 可编辑/删除；金额一律由服务端按明细行计算，不信任客户端。
+ * 状态机：draft → pending → approved → received（到货入库，自动生成入库单 GR）
+ *                ↘ rejected（可编辑后重新提交）| draft/pending/rejected → closed（关闭）
+ * 仅 draft/rejected 可编辑、仅 draft 可删除；金额一律由服务端按明细行计算。
+ * 审批走通用引擎（approval.ts）；到货入库强一致由数据库函数 po_fulfill_order 单事务保证。
+ *
+ * 历史兼容：confirmed/completed/cancelled 已在 0006 迁移映射为 approved/received/closed。
  *
  * 注意：Supabase SDK 无多语句事务，"订单头+明细"写入采用补偿模式
  * （明细失败则删除订单头），MVP 规模可接受；后续迁移存储过程或 Edge Function。
@@ -12,8 +15,9 @@ import { z } from 'zod';
 import { ApiError } from '@/server/http';
 import { throwInventoryRpcError } from '@/server/inventory/shared';
 import { emptyToNull, escapeOrKeyword, throwDbError, type ListQuery, type PagedResult } from '@/server/master-data/helpers';
+import { approveCurrentStep, rejectCurrentStep, submitDocument } from '@/server/purchase/approval';
 import { getSupabaseClient } from '@/storage/database/supabase-client';
-import type { PoPurchaseOrder, PoPurchaseOrderItem } from '@/storage/database/shared/schema';
+import type { PoPurchaseOrder, PoPurchaseOrderItem, SysUser } from '@/storage/database/shared/schema';
 
 // ---------------------------------------------------------------------------
 // 类型
@@ -46,6 +50,15 @@ export interface PurchaseOrderView {
   cancelled_at: string | null;
   created_at: string;
   updated_at: string;
+  /** 来源申请单（可空） */
+  requisition_id: string | null;
+  requisition_no: string | null;
+  approval_level: number | null;
+  current_step: number;
+  submitted_at: string | null;
+  approved_by_name: string | null;
+  approved_at: string | null;
+  reject_reason: string | null;
   items?: PurchaseOrderItemView[];
 }
 
@@ -68,11 +81,13 @@ export const orderUpsertSchema = z.object({
     .regex(/^\d{4}-\d{2}-\d{2}$/, '日期格式应为 YYYY-MM-DD')
     .optional(),
   remark: z.string().max(500, '备注不能超过 500 字').optional(),
+  /** 来源采购申请单（申请单转入时携带） */
+  requisition_id: uuid.optional(),
   items: z.array(itemSchema).min(1, '至少需要一行明细').max(200, '明细行过多'),
 });
 export type OrderUpsertInput = z.infer<typeof orderUpsertSchema>;
 
-const ORDER_STATUSES = ['draft', 'confirmed', 'completed', 'cancelled'] as const;
+const ORDER_STATUSES = ['draft', 'pending', 'approved', 'rejected', 'received', 'closed'] as const;
 export type OrderStatus = (typeof ORDER_STATUSES)[number];
 
 // ---------------------------------------------------------------------------
@@ -90,6 +105,8 @@ function serialize(
     creatorName?: string | null;
     itemCount?: number;
     items?: PurchaseOrderItemView[];
+    requisitionNo?: string | null;
+    approverName?: string | null;
   } = {},
 ): PurchaseOrderView {
   return {
@@ -107,6 +124,14 @@ function serialize(
     cancelled_at: row.cancelled_at ? new Date(row.cancelled_at).toISOString() : null,
     created_at: new Date(row.created_at).toISOString(),
     updated_at: new Date(row.updated_at).toISOString(),
+    requisition_id: row.requisition_id,
+    requisition_no: extra.requisitionNo ?? null,
+    approval_level: row.approval_level,
+    current_step: row.current_step,
+    submitted_at: row.submitted_at ? new Date(row.submitted_at).toISOString() : null,
+    approved_by_name: extra.approverName ?? null,
+    approved_at: row.approved_at ? new Date(row.approved_at).toISOString() : null,
+    reject_reason: row.reject_reason,
     items: extra.items,
   };
 }
@@ -274,6 +299,18 @@ export async function getOrder(id: string): Promise<PurchaseOrderView> {
 
   const supplierNames = await fetchNameMap('md_suppliers', [row.supplier_id]);
   const creatorNames = row.created_by ? await fetchNameMap('sys_users', [row.created_by]) : new Map<string, string>();
+  const approverNames = row.approved_by ? await fetchNameMap('sys_users', [row.approved_by]) : new Map<string, string>();
+
+  // 来源申请单号（若有）
+  let requisitionNo: string | null = null;
+  if (row.requisition_id) {
+    const { data: req } = await supabase
+      .from('po_requisitions')
+      .select('req_no')
+      .eq('id', row.requisition_id)
+      .maybeSingle();
+    requisitionNo = (req?.req_no as string | undefined) ?? null;
+  }
 
   const itemViews: PurchaseOrderItemView[] = items.map((item) => ({
     id: item.id,
@@ -292,6 +329,8 @@ export async function getOrder(id: string): Promise<PurchaseOrderView> {
     creatorName: row.created_by ? creatorNames.get(row.created_by) : null,
     itemCount: itemViews.length,
     items: itemViews,
+    requisitionNo,
+    approverName: row.approved_by ? approverNames.get(row.approved_by) : null,
   });
 }
 
@@ -317,6 +356,7 @@ export async function createOrder(input: OrderUpsertInput, operatorId: string): 
         order_date: orderDate,
         total_amount: total,
         remark,
+        requisition_id: input.requisition_id ?? null,
         created_by: operatorId,
         status: 'draft',
       })
@@ -344,8 +384,8 @@ export async function createOrder(input: OrderUpsertInput, operatorId: string): 
 export async function updateOrder(id: string, input: OrderUpsertInput): Promise<PurchaseOrderView> {
   const supabase = getSupabaseClient();
   const existing = await getOrder(id);
-  if (existing.status !== 'draft') {
-    throw new ApiError(400, 'PO.NOT_DRAFT', '只有草稿状态的订单可以编辑');
+  if (existing.status !== 'draft' && existing.status !== 'rejected') {
+    throw new ApiError(400, 'PO.NOT_DRAFT', '只有草稿或已驳回状态的订单可以编辑');
   }
   const { items, total } = await prepareItems(input);
 
@@ -382,41 +422,47 @@ export async function deleteOrder(id: string): Promise<void> {
   if (error) throwDbError(error, '删除采购订单');
 }
 
-export async function confirmOrder(id: string): Promise<PurchaseOrderView> {
-  const supabase = getSupabaseClient();
+/** 提交审批：draft/rejected → pending（审批引擎生成步骤实例） */
+export async function submitOrder(id: string, user: SysUser): Promise<PurchaseOrderView> {
   const existing = await getOrder(id);
-  if (existing.status !== 'draft') {
-    throw new ApiError(400, 'PO.BAD_TRANSITION', '只有草稿状态的订单可以确认');
-  }
-  const { error } = await supabase
-    .from('po_purchase_orders')
-    .update({ status: 'confirmed', confirmed_at: new Date().toISOString(), updated_at: new Date().toISOString() })
-    .eq('id', id);
-  if (error) throwDbError(error, '确认采购订单');
+  await submitDocument('order', id, existing.total_amount, user);
   return getOrder(id);
 }
 
+/** 审批通过当前步（终审后 → approved） */
+export async function approveOrder(id: string, user: SysUser, comment?: string): Promise<PurchaseOrderView> {
+  await approveCurrentStep('order', id, user, comment);
+  return getOrder(id);
+}
+
+/** 驳回当前步（→ rejected） */
+export async function rejectOrder(id: string, user: SysUser, reason: string): Promise<PurchaseOrderView> {
+  await rejectCurrentStep('order', id, user, reason);
+  return getOrder(id);
+}
+
+/** 关闭订单：draft/pending/rejected → closed */
 export async function cancelOrder(id: string): Promise<PurchaseOrderView> {
   const supabase = getSupabaseClient();
   const existing = await getOrder(id);
-  if (existing.status !== 'draft' && existing.status !== 'confirmed') {
-    throw new ApiError(400, 'PO.BAD_TRANSITION', '当前状态不允许取消');
+  if (!['draft', 'pending', 'rejected'].includes(existing.status)) {
+    throw new ApiError(400, 'PO.BAD_TRANSITION', '当前状态不允许关闭');
   }
   const { error } = await supabase
     .from('po_purchase_orders')
-    .update({ status: 'cancelled', cancelled_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+    .update({ status: 'closed', cancelled_at: new Date().toISOString(), updated_at: new Date().toISOString() })
     .eq('id', id);
-  if (error) throwDbError(error, '取消采购订单');
+  if (error) throwDbError(error, '关闭采购订单');
   return getOrder(id);
 }
 
 /**
- * 到货完成：confirmed → completed 并整单入库。
- * 强一致由数据库函数 inv_complete_purchase 单事务保证。
+ * 到货完成：approved → received 并整单入库（自动生成一张正式入库单 GR）。
+ * 强一致由数据库函数 po_fulfill_order 单事务保证（含移动加权成本）。
  */
 export async function completeOrder(id: string, operatorId: string): Promise<PurchaseOrderView> {
   const supabase = getSupabaseClient();
-  const { error } = await supabase.rpc('inv_complete_purchase', {
+  const { error } = await supabase.rpc('po_fulfill_order', {
     p_order_id: id,
     p_user_id: operatorId,
   });
