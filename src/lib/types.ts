@@ -584,9 +584,25 @@ export interface FinPayment {
   /** cash | bank | wechat | alipay | other */
   method: string;
   paid_at: string;
+  /** pending(待核销) | approved(已核销) | cancelled(作废) */
+  status: string;
+  bill_no: string | null;
+  approved_at: string | null;
   remark: string | null;
   created_by_name: string | null;
   created_at: string;
+}
+
+/** 应收/应付单行（物化：已出库销售订单 / 已入库采购订单） */
+export interface FinBillRow {
+  bill_no: string;
+  partner_id: string;
+  partner_name: string;
+  bill_date: string;
+  amount: number;
+  settled: number;
+  outstanding: number;
+  status: 'open' | 'settled';
 }
 
 /** 应收欠款聚合行（按客户） */

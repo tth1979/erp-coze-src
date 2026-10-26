@@ -44,6 +44,9 @@ export interface PaymentView {
   amount: number;
   method: string;
   paid_at: string;
+  status: string;
+  bill_no: string | null;
+  approved_at: string | null;
   remark: string | null;
   created_by_name: string | null;
   created_at: string;
@@ -96,6 +99,7 @@ const baseFields = {
     .regex(/^\d{4}-\d{2}-\d{2}$/, '日期格式应为 YYYY-MM-DD')
     .optional(),
   order_id: uuid.optional(),
+  bill_no: z.string().max(32, '核销单号过长').optional(),
   remark: z.string().max(500, '备注不能超过 500 字').optional(),
 };
 
@@ -153,6 +157,9 @@ function serialize(row: FinPayment, names: { partner?: string | null; creator?: 
     amount: toNumber(row.amount),
     method: row.method,
     paid_at: row.paid_at,
+    status: row.status,
+    bill_no: row.bill_no,
+    approved_at: row.approved_at ? new Date(row.approved_at).toISOString() : null,
     remark: row.remark,
     created_by_name: names.creator ?? null,
     created_at: new Date(row.created_at).toISOString(),
@@ -173,7 +180,7 @@ async function sumCustomer(customerId: string): Promise<{ billed: number; receiv
   const supabase = getSupabaseClient();
   const [{ data: orders, error: oErr }, { data: receipts, error: rErr }, { data: returnRows, error: srErr }] = await Promise.all([
     supabase.from('so_sales_orders').select('total_amount').in('status', ['completed', 'shipped']).eq('customer_id', customerId),
-    supabase.from('fin_payments').select('amount').eq('direction', 'receipt').eq('customer_id', customerId),
+    supabase.from('fin_payments').select('amount').eq('direction', 'receipt').eq('status', 'approved').eq('customer_id', customerId),
     supabase.from('so_returns').select('total_amount').eq('status', 'approved').eq('customer_id', customerId),
   ]);
   if (oErr) throwDbError(oErr, '统计客户应收');
@@ -196,7 +203,7 @@ async function sumSupplier(supplierId: string): Promise<{ billed: number; paid: 
       .select('total_amount')
       .in('status', ['completed', 'received'])
       .eq('supplier_id', supplierId),
-    supabase.from('fin_payments').select('amount').eq('direction', 'payment').eq('supplier_id', supplierId),
+    supabase.from('fin_payments').select('amount').eq('direction', 'payment').eq('status', 'approved').eq('supplier_id', supplierId),
   ]);
   if (oErr) throwDbError(oErr, '统计供应商应付');
   if (pErr) throwDbError(pErr, '统计供应商已付');
@@ -333,6 +340,7 @@ interface InsertInput {
   paid_at?: string;
   order_id?: string;
   order_no: string | null;
+  bill_no?: string;
   remark?: string;
   customer_id?: string;
   supplier_id?: string;
@@ -357,6 +365,8 @@ async function insertPayment(direction: PaymentDirection, input: InsertInput, op
         amount: round2(input.amount),
         method: input.method,
         paid_at: paidAt,
+        status: 'pending',
+        bill_no: emptyToNull(input.bill_no),
         remark: emptyToNull(input.remark),
         created_by: operatorId,
       })
@@ -380,14 +390,17 @@ async function insertPayment(direction: PaymentDirection, input: InsertInput, op
   });
 }
 
-/** 删除收付款单（欠款随之回升） */
+/** 删除收付款单（仅允许未核销 pending 状态删除；已核销需红冲，后续里程碑） */
 export async function deletePayment(id: string, direction: PaymentDirection): Promise<void> {
   const supabase = getSupabaseClient();
-  const { data, error } = await supabase.from('fin_payments').select('id, direction').eq('id', id).maybeSingle();
+  const { data, error } = await supabase.from('fin_payments').select('id, direction, status').eq('id', id).maybeSingle();
   if (error) throwDbError(error, '查询收付款单');
   if (!data) throw new ApiError(404, 'FIN.NOT_FOUND', '收付款单不存在');
   if (data.direction !== direction) {
     throw new ApiError(400, 'FIN.DIRECTION_MISMATCH', '单据类型不匹配');
+  }
+  if (data.status !== 'pending') {
+    throw new ApiError(400, 'FIN.BAD_TRANSITION', '仅未核销单据可删除（已核销请走红冲）');
   }
   const { error: delErr } = await supabase.from('fin_payments').delete().eq('id', id);
   if (delErr) throwDbError(delErr, '删除收付款单');
@@ -413,9 +426,10 @@ async function matchPartnerIds(direction: PaymentDirection | undefined, keyword:
 
 export interface PaymentListQuery extends ListQuery {
   direction?: PaymentDirection;
+  status?: string;
 }
 
-/** 收付款流水分页（按创建时间倒序；keyword 搜单号/关联单号/往来单位） */
+/** 收付款流水分页（按创建时间倒序；keyword 搜单号/关联单号/往来单位；status 过滤待核销/已核销/作废） */
 export async function listPayments(query: PaymentListQuery): Promise<PagedResult<PaymentView>> {
   const supabase = getSupabaseClient();
   const from = (query.page - 1) * query.pageSize;
@@ -431,6 +445,7 @@ export async function listPayments(query: PaymentListQuery): Promise<PagedResult
     .order('created_at', { ascending: false });
 
   if (query.direction) builder = builder.eq('direction', query.direction);
+  if (query.status) builder = builder.eq('status', query.status);
   if (query.keyword) {
     const kw = escapeOrKeyword(query.keyword);
     const parts = [`doc_no.ilike.%${kw}%`, `order_no.ilike.%${kw}%`];
@@ -515,7 +530,7 @@ async function aggregateByPartners(
 
   const [{ data: orders, error: oErr }, { data: payments, error: pErr }] = await Promise.all([
     supabase.from(orderTable).select(`${partnerCol}, total_amount`).in('status', orderStatuses).in(partnerCol, partnerIds),
-    supabase.from('fin_payments').select(`${partnerCol}, amount`).eq('direction', direction).in(partnerCol, partnerIds),
+    supabase.from('fin_payments').select(`${partnerCol}, amount`).eq('direction', direction).eq('status', 'approved').in(partnerCol, partnerIds),
   ]);
   if (oErr) throwDbError(oErr, '聚合订单金额');
   if (pErr) throwDbError(pErr, '聚合收付款');
@@ -607,9 +622,9 @@ export async function financeSummary(): Promise<{ receivable_outstanding: number
   const [{ data: soRows, error: soErr }, { data: rcRows, error: rcErr }, { data: poRows, error: poErr }, { data: pyRows, error: pyErr }] =
     await Promise.all([
       supabase.from('so_sales_orders').select('total_amount').in('status', ['completed', 'shipped']),
-      supabase.from('fin_payments').select('amount').eq('direction', 'receipt'),
+      supabase.from('fin_payments').select('amount').eq('direction', 'receipt').eq('status', 'approved'),
       supabase.from('po_purchase_orders').select('total_amount').in('status', ['completed', 'received']),
-      supabase.from('fin_payments').select('amount').eq('direction', 'payment'),
+      supabase.from('fin_payments').select('amount').eq('direction', 'payment').eq('status', 'approved'),
     ]);
   if (soErr || rcErr || poErr || pyErr) {
     throwDbError(soErr ?? rcErr ?? poErr ?? pyErr ?? { message: 'unknown' }, '统计财务汇总');
@@ -648,4 +663,193 @@ export async function financeSummary(): Promise<{ receivable_outstanding: number
     receivable_outstanding: Math.max(0, receivable),
     payable_outstanding: Math.max(0, payable),
   };
+}
+
+// ---------------------------------------------------------------------------
+// 核销 / 作废（审核动作）
+//  核销一致性由 plpgsql 单事务（fin_apply_receipt/payment）保证，超收/超付在
+//  库内拦截（RAISE P0001 → 映射 400 FIN.OVER_AMOUNT），并锁往来单位行防并发错账。
+// ---------------------------------------------------------------------------
+
+interface RpcErrorLike {
+  message: string;
+  code?: string;
+  details?: string;
+  hint?: string;
+}
+
+function throwFinRpcError(error: RpcErrorLike, action: string): never {
+  const text = `${error.message ?? ''} ${error.details ?? ''} ${error.hint ?? ''}`;
+  if (text.includes('FIN_OVER_AMOUNT') || error.code === 'P0001') {
+    throw new ApiError(400, 'FIN.OVER_AMOUNT', `${action}失败：金额超出该往来单位剩余应收/应付`);
+  }
+  if (text.includes('FIN_NOT_FOUND')) {
+    throw new ApiError(404, 'FIN.NOT_FOUND', `${action}失败：单据不存在`);
+  }
+  if (text.includes('FIN_BAD_STATE') || text.includes('FIN_BAD_PARAM')) {
+    throw new ApiError(400, 'FIN.BAD_TRANSITION', `${action}失败：当前单据状态不允许该操作`);
+  }
+  throw new ApiError(500, 'FIN.RPC_ERROR', `${action}失败: ${error.message}`);
+}
+
+async function getPayment(id: string): Promise<PaymentView> {
+  const supabase = getSupabaseClient();
+  const { data, error } = await supabase.from('fin_payments').select('*').eq('id', id).maybeSingle();
+  if (error) throwDbError(error, '查询收付款单');
+  if (!data) throw new ApiError(404, 'FIN.NOT_FOUND', '收付款单不存在');
+  const row = data as FinPayment;
+  const partnerId = row.direction === 'receipt' ? row.customer_id : row.supplier_id;
+  const partnerNames = await fetchNameMap(row.direction === 'receipt' ? 'md_customers' : 'md_suppliers', [partnerId]);
+  const creatorNames = await fetchNameMap('sys_users', [row.created_by]);
+  return serialize(row, {
+    partner: partnerId ? partnerNames.get(partnerId) : null,
+    creator: row.created_by ? creatorNames.get(row.created_by) : null,
+  });
+}
+
+/** 收款核销（审核通过，递减应收） */
+export async function approveReceipt(id: string, operatorId: string): Promise<PaymentView> {
+  const supabase = getSupabaseClient();
+  const { error } = await supabase.rpc('fin_apply_receipt', { p_id: id });
+  if (error) throwFinRpcError(error, '核销收款');
+  const { error: uErr } = await supabase
+    .from('fin_payments')
+    .update({ approved_by: operatorId, approved_at: new Date().toISOString() })
+    .eq('id', id);
+  if (uErr) throwDbError(uErr, '更新核销人');
+  return getPayment(id);
+}
+
+/** 付款核销（审核通过，递减应付） */
+export async function approvePayment(id: string, operatorId: string): Promise<PaymentView> {
+  const supabase = getSupabaseClient();
+  const { error } = await supabase.rpc('fin_apply_payment', { p_id: id });
+  if (error) throwFinRpcError(error, '核销付款');
+  const { error: uErr } = await supabase
+    .from('fin_payments')
+    .update({ approved_by: operatorId, approved_at: new Date().toISOString() })
+    .eq('id', id);
+  if (uErr) throwDbError(uErr, '更新核销人');
+  return getPayment(id);
+}
+
+/** 作废收款单（仅 pending 未核销可作废） */
+export async function cancelReceipt(id: string, operatorId: string): Promise<PaymentView> {
+  const supabase = getSupabaseClient();
+  const { error } = await supabase.rpc('fin_cancel_receipt', { p_id: id });
+  if (error) throwFinRpcError(error, '作废收款单');
+  const { error: uErr } = await supabase
+    .from('fin_payments')
+    .update({ cancelled_by: operatorId, cancelled_at: new Date().toISOString() })
+    .eq('id', id);
+  if (uErr) throwDbError(uErr, '更新作废人');
+  return getPayment(id);
+}
+
+/** 作废付款单（仅 pending 未核销可作废） */
+export async function cancelPayment(id: string, operatorId: string): Promise<PaymentView> {
+  const supabase = getSupabaseClient();
+  const { error } = await supabase.rpc('fin_cancel_payment', { p_id: id });
+  if (error) throwFinRpcError(error, '作废付款单');
+  const { error: uErr } = await supabase
+    .from('fin_payments')
+    .update({ cancelled_by: operatorId, cancelled_at: new Date().toISOString() })
+    .eq('id', id);
+  if (uErr) throwDbError(uErr, '更新作废人');
+  return getPayment(id);
+}
+
+// ---------------------------------------------------------------------------
+// 应收/应付单（物化视图）
+//  应收单 = 已出库(shipped) 销售订单；应付单 = 已入库(received) 采购订单；
+//  已核销 = 同单据下 status=approved 的收/付款累计；outstanding = amount − settled。
+//  核销明细可溯：收款单 order_id/order_no 即落到对应应收单，台账可通过 bill_no 追溯。
+// ---------------------------------------------------------------------------
+
+export interface FinBillRow {
+  /** 应收/应付单号（=来源销售/采购订单号） */
+  bill_no: string;
+  partner_id: string;
+  partner_name: string;
+  bill_date: string;
+  amount: number;
+  settled: number;
+  outstanding: number;
+  status: 'open' | 'settled';
+}
+
+export interface BillListQuery extends ListQuery {
+  status?: 'open' | 'settled';
+}
+
+/** 应收单列表（销售出库订单物化） */
+export async function listArBills(query: BillListQuery): Promise<PagedResult<FinBillRow>> {
+  return listBills('receipt', query);
+}
+
+/** 应付单列表（采购入库订单物化） */
+export async function listApBills(query: BillListQuery): Promise<PagedResult<FinBillRow>> {
+  return listBills('payment', query);
+}
+
+async function listBills(direction: PaymentDirection, query: BillListQuery): Promise<PagedResult<FinBillRow>> {
+  const supabase = getSupabaseClient();
+  const isReceipt = direction === 'receipt';
+  const partnerTable = isReceipt ? 'md_customers' : 'md_suppliers';
+  const orderTable = isReceipt ? 'so_sales_orders' : 'po_purchase_orders';
+  const orderStatuses = isReceipt ? ['completed', 'shipped'] : ['completed', 'received'];
+  const partnerCol = isReceipt ? 'customer_id' : 'supplier_id';
+  const from = (query.page - 1) * query.pageSize;
+
+  let builder = supabase
+    .from(orderTable)
+    .select(`id, order_no, order_date, total_amount, ${partnerCol}`, { count: 'exact' })
+    .in('status', orderStatuses)
+    .order('order_date', { ascending: false });
+  if (query.keyword) {
+    const kw = escapeOrKeyword(query.keyword);
+    const parts = [`order_no.ilike.%${kw}%`];
+    const partnerIds = await matchPartnerIds(direction, query.keyword);
+    if (partnerIds && partnerIds.length > 0) parts.push(`${partnerCol}.in.(${partnerIds.join(',')})`);
+    builder = builder.or(parts.join(','));
+  }
+  const { data, error, count } = await builder.range(from, from + query.pageSize - 1);
+  if (error) throwDbError(error, '查询应收/应付单');
+  const rows = (data ?? []) as unknown as Array<Record<string, unknown>>;
+  const orderIds = rows.map((r) => r.id).filter((v): v is string => Boolean(v));
+
+  const settledMap = new Map<string, number>();
+  if (orderIds.length > 0) {
+    const { data: p, error: pErr } = await supabase
+      .from('fin_payments')
+      .select('order_id, amount')
+      .eq('direction', direction)
+      .eq('status', 'approved')
+      .in('order_id', orderIds);
+    if (pErr) throwDbError(pErr, '聚合核销明细');
+    for (const r of (p ?? []) as unknown as Array<{ order_id: string; amount: string }>) {
+      settledMap.set(r.order_id, round2((settledMap.get(r.order_id) ?? 0) + toNumber(r.amount)));
+    }
+  }
+
+  const partnerIds = rows.map((r) => r[partnerCol]).filter((v): v is string => Boolean(v));
+  const nameMap = await fetchNameMap(partnerTable, partnerIds);
+
+  let items: FinBillRow[] = rows.map((r) => {
+    const amount = toNumber(r.total_amount as string);
+    const settledMapAmt = settledMap.get(r.id as string) ?? 0;
+    const outstanding = round2(amount - settledMapAmt);
+    return {
+      bill_no: (r.order_no as string) ?? '',
+      partner_id: (r[partnerCol] as string) ?? '',
+      partner_name: nameMap.get(r[partnerCol] as string) ?? '-',
+      bill_date: (r.order_date as string) ?? '',
+      amount: round2(amount),
+      settled: round2(settledMapAmt),
+      outstanding,
+      status: outstanding <= 0.001 ? 'settled' : 'open',
+    };
+  });
+  if (query.status) items = items.filter((b) => b.status === query.status);
+  return { items, total: count ?? 0, page: query.page, page_size: query.pageSize };
 }

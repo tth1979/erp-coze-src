@@ -1,7 +1,8 @@
 'use client';
 
 import { useState } from 'react';
-import { ArrowDownLeft, ArrowUpRight, Search, Trash2, Wallet } from 'lucide-react';
+import { toast } from 'sonner';
+import { ArrowDownLeft, ArrowUpRight, CheckCircle2, Search, Trash2, Wallet, XCircle } from 'lucide-react';
 import { useAuth } from '@/components/auth/auth-provider';
 import { METHOD_LABELS } from '@/components/finance/payment-form-dialog';
 import { formatMoney } from '@/components/finance/balance-list';
@@ -27,6 +28,7 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { usePagedList } from '@/lib/use-paged-list';
+import { apiFetch } from '@/lib/api-client';
 import type { FinPayment } from '@/lib/types';
 
 function formatTime(iso: string): string {
@@ -43,31 +45,81 @@ function partnerOf(row: FinPayment): string {
   return (row.direction === 'receipt' ? row.customer_name : row.supplier_name) ?? '—';
 }
 
+function statusBadge(status: string) {
+  if (status === 'approved') {
+    return (
+      <Badge variant="outline" className="border-emerald-200 bg-emerald-50 text-emerald-700">
+        已核销
+      </Badge>
+    );
+  }
+  if (status === 'cancelled') {
+    return (
+      <Badge variant="outline" className="border-stone-200 bg-stone-50 text-stone-500">
+        作废
+      </Badge>
+    );
+  }
+  return (
+    <Badge variant="outline" className="border-amber-200 bg-amber-50 text-amber-700">
+      待核销
+    </Badge>
+  );
+}
+
 export default function PaymentsPage() {
   const { can } = useAuth();
   const canWrite = can('fin.write');
   const [searchInput, setSearchInput] = useState('');
   const [direction, setDirection] = useState('');
-  const list = usePagedList<FinPayment>('/api/fin/payments', 10, { direction });
+  const [status, setStatus] = useState('');
+  const list = usePagedList<FinPayment>('/api/fin/payments', 10, { direction, status });
   const [deleteTarget, setDeleteTarget] = useState<FinPayment | null>(null);
+  const [actingId, setActingId] = useState<string | null>(null);
+
+  async function apply(id: string, action: 'approve' | 'cancel') {
+    const dir = list.items.find((r) => r.id === id)?.direction ?? 'receipt';
+    const base = dir === 'receipt' ? 'receipts' : 'payments';
+    setActingId(id);
+    try {
+      const res = await apiFetch<FinPayment>(`/api/fin/${base}/${id}/${action}`, { method: 'POST' });
+      toast.success(action === 'approve' ? '已核销' : '已作废', { description: `单号 ${res.doc_no}` });
+      list.reload?.();
+    } catch (e) {
+      toast.error(action === 'approve' ? '核销失败' : '作废失败', { description: (e as Error).message });
+    } finally {
+      setActingId(null);
+    }
+  }
 
   return (
     <div className="space-y-4">
       <div>
         <h1 className="text-lg font-bold text-stone-900">收付款流水</h1>
-        <p className="text-xs text-stone-500 sm:text-sm">收款与付款台账，删除单据后对应欠款自动回升</p>
+        <p className="text-xs text-stone-500 sm:text-sm">收款/付款台账，审核核销后递减应收/应付余额；作废仅限未核销单据</p>
       </div>
 
       {/* 筛选栏 */}
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
         <Select value={direction || 'all'} onValueChange={(v) => setDirection(v === 'all' ? '' : v)}>
-          <SelectTrigger className="h-9 w-full sm:w-36">
+          <SelectTrigger className="h-9 w-full sm:w-32">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="all">全部类型</SelectItem>
             <SelectItem value="receipt">收款</SelectItem>
             <SelectItem value="payment">付款</SelectItem>
+          </SelectContent>
+        </Select>
+        <Select value={status || 'all'} onValueChange={(v) => setStatus(v === 'all' ? '' : v)}>
+          <SelectTrigger className="h-9 w-full sm:w-32">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">全部状态</SelectItem>
+            <SelectItem value="pending">待核销</SelectItem>
+            <SelectItem value="approved">已核销</SelectItem>
+            <SelectItem value="cancelled">作废</SelectItem>
           </SelectContent>
         </Select>
         <Input
@@ -95,7 +147,7 @@ export default function PaymentsPage() {
         <div className="rounded-lg border border-stone-200 bg-white p-8 text-center">
           <Wallet className="mx-auto mb-2 h-8 w-8 text-stone-300" />
           <p className="text-sm text-stone-500">
-            {list.keyword || direction ? '没有符合条件的收付款记录' : '暂无收付款记录，可在应收/应付欠款页登记'}
+            {list.keyword || direction || status ? '没有符合条件的收付款记录' : '暂无收付款记录，可在应收/应付欠款页登记'}
           </p>
         </div>
       ) : (
@@ -120,6 +172,7 @@ export default function PaymentsPage() {
                           {isReceipt ? '收款' : '付款'}
                         </Badge>
                         <span className="truncate font-mono text-xs text-stone-500">{row.doc_no}</span>
+                        {statusBadge(row.status)}
                       </div>
                       <div className="mt-1 truncate text-sm font-medium text-stone-900">{partnerOf(row)}</div>
                     </div>
@@ -136,17 +189,6 @@ export default function PaymentsPage() {
                         )}
                         ¥{formatMoney(row.amount)}
                       </span>
-                      {canWrite && (
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="h-7 w-7 text-stone-400 hover:text-red-600"
-                          onClick={() => setDeleteTarget(row)}
-                          aria-label="删除"
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
-                      )}
                     </div>
                   </div>
                   <dl className="mt-2 grid grid-cols-2 gap-2 text-xs">
@@ -157,8 +199,8 @@ export default function PaymentsPage() {
                       </dd>
                     </div>
                     <div>
-                      <dt className="text-stone-500">关联单号</dt>
-                      <dd className="mt-0.5 font-mono text-stone-800">{row.order_no ?? '—'}</dd>
+                      <dt className="text-stone-500">核销单号</dt>
+                      <dd className="mt-0.5 font-mono text-stone-800">{row.bill_no ?? row.order_no ?? '—'}</dd>
                     </div>
                     <div>
                       <dt className="text-stone-500">操作人</dt>
@@ -169,6 +211,39 @@ export default function PaymentsPage() {
                       <dd className="mt-0.5 truncate text-stone-800">{row.remark ?? '—'}</dd>
                     </div>
                   </dl>
+                  <div className="mt-2 flex items-center justify-end gap-1.5">
+                    {canWrite && row.status === 'pending' && (
+                      <>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-8 border-emerald-200 text-emerald-700"
+                          disabled={actingId === row.id}
+                          onClick={() => apply(row.id, 'approve')}
+                        >
+                          <CheckCircle2 className="mr-1 h-3.5 w-3.5" /> 核销
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-8 text-stone-500"
+                          disabled={actingId === row.id}
+                          onClick={() => apply(row.id, 'cancel')}
+                        >
+                          <XCircle className="mr-1 h-3.5 w-3.5" /> 作废
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7 text-stone-400 hover:text-red-600"
+                          onClick={() => setDeleteTarget(row)}
+                          aria-label="删除"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </>
+                    )}
+                  </div>
                 </div>
               );
             })}
@@ -181,11 +256,12 @@ export default function PaymentsPage() {
                 <TableRow>
                   <TableHead>单号</TableHead>
                   <TableHead>类型</TableHead>
+                  <TableHead>状态</TableHead>
                   <TableHead>往来单位</TableHead>
                   <TableHead className="text-right">金额</TableHead>
                   <TableHead>方式</TableHead>
                   <TableHead>收付日期</TableHead>
-                  <TableHead>关联单号</TableHead>
+                  <TableHead>核销单号</TableHead>
                   <TableHead>操作人</TableHead>
                   <TableHead>登记时间</TableHead>
                   {canWrite && <TableHead className="text-right">操作</TableHead>}
@@ -209,6 +285,7 @@ export default function PaymentsPage() {
                           {isReceipt ? '收款' : '付款'}
                         </Badge>
                       </TableCell>
+                      <TableCell>{statusBadge(row.status)}</TableCell>
                       <TableCell className="font-medium">{partnerOf(row)}</TableCell>
                       <TableCell
                         className={`text-right font-semibold tabular-nums ${
@@ -219,20 +296,48 @@ export default function PaymentsPage() {
                       </TableCell>
                       <TableCell className="text-sm">{METHOD_LABELS[row.method] ?? row.method}</TableCell>
                       <TableCell className="text-sm tabular-nums">{row.paid_at}</TableCell>
-                      <TableCell className="font-mono text-xs">{row.order_no ?? '—'}</TableCell>
+                      <TableCell className="font-mono text-xs">{row.bill_no ?? row.order_no ?? '—'}</TableCell>
                       <TableCell className="text-sm">{row.created_by_name ?? '—'}</TableCell>
                       <TableCell className="text-xs text-stone-500 tabular-nums">{formatTime(row.created_at)}</TableCell>
                       {canWrite && (
                         <TableCell className="text-right">
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-7 w-7 text-stone-400 hover:text-red-600"
-                            onClick={() => setDeleteTarget(row)}
-                            aria-label="删除"
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
+                          <div className="flex items-center justify-end gap-1">
+                            {row.status === 'pending' && (
+                              <>
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  className="h-7 border-emerald-200 px-2 text-emerald-700"
+                                  disabled={actingId === row.id}
+                                  onClick={() => apply(row.id, 'approve')}
+                                  aria-label="核销"
+                                >
+                                  <CheckCircle2 className="mr-1 h-3.5 w-3.5" /> 核销
+                                </Button>
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  className="h-7 px-2 text-stone-500"
+                                  disabled={actingId === row.id}
+                                  onClick={() => apply(row.id, 'cancel')}
+                                  aria-label="作废"
+                                >
+                                  <XCircle className="mr-1 h-3.5 w-3.5" /> 作废
+                                </Button>
+                              </>
+                            )}
+                            {canWrite && (
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-7 w-7 text-stone-400 hover:text-red-600"
+                                onClick={() => setDeleteTarget(row)}
+                                aria-label="删除"
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </Button>
+                            )}
+                          </div>
                         </TableCell>
                       )}
                     </TableRow>

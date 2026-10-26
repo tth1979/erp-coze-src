@@ -53,7 +53,7 @@
 | 采购模块（已交付 V2） | `po_*` | 五单主链路：申请单(审批)→订单(审批)→入库单(暂估/冲回)→退货单；四级审批引擎；入库即库存+移动加权成本 |
 | 销售模块（已交付 V2） | `so_*` | 三单主链路：订单(审批+等级价格)→出库单(数量强校验+成本结转)→退货单(红字回补)；应收联动 |
 | 库存模块（已交付 V2） | `inv_*` | 多仓台账（现有/在途/冻结/可用）+ 批次 FIFO + 只追加台账 + 调拨单(IT)双边单事务 + 盘点单(IC)差异过账 + 安全库存预警 |
-| 财务模块（已交付 MVP） | `fin_*` | 应收/应付欠款汇总 + 收付款单（超额拦截）+ 流水台账 |
+| 财务模块（已交付，含应收应付核销） | `fin_*` | 应收/应付欠款汇总 + 收付款单（登记超额拦截 + plpgsql 核销/冲销）+ 应收/应付单物化 + 流水台账 |
 | 报表模块（周边，V1） | `report_*`（无独立表，SDK 只读聚合） | 经营统计：汇总卡片/采购/销售/库存报表，dashboard 趋势图 |
 | 系统字典模块（周边，V1） | `dict_*` | 字典类型+字典项（计量单位/付款方式/税率/客户等级/状态），种子预置、供下拉引用 |
 | 计量单位（周边，V1） | `md_units` | 基础资料扩充：计量单位档案 + 基准单位+换算系数 |
@@ -133,10 +133,16 @@
 | POST | /api/inv/checks/[id]/submit、approve、reject、cancel | inv.write / inv.approve | 盘点单审批（终审=差异过账，盘盈入/盘亏出） |
 | GET | /api/fin/receivables | fin.read | 应收欠款按客户汇总分页（billed/received/outstanding，keyword 搜客户） |
 | GET | /api/fin/payables | fin.read | 应付欠款按供应商汇总分页（billed/paid/outstanding） |
-| GET/POST | /api/fin/receipts | fin.read / fin.write | 收款单分页列表 / 登记收款 |
-| DELETE | /api/fin/receipts/[id] | fin.write | 删除收款单（欠款回升） |
-| GET/POST | /api/fin/payments | fin.read / fin.write | 付款单分页列表（direction 筛选）/ 登记付款 |
-| DELETE | /api/fin/payments/[id] | fin.write | 删除付款单 |
+| GET/POST | /api/fin/receipts | fin.read / fin.write | 收款单分页列表（status 筛选）/ 登记收款（pending，可带 order_id 关联应收单） |
+| POST | /api/fin/receipts/[id]/approve | fin.write | 收款核销（plpgsql 单事务，递减应收，超收 400） |
+| POST | /api/fin/receipts/[id]/cancel | fin.write | 作废收款单（仅 pending） |
+| GET | /api/fin/ar-bills | fin.read | 应收单列表（已出库销售订单物化，含 settles/余额/状态，keyword+status） |
+| DELETE | /api/fin/receipts/[id] | fin.write | 删除收款单（仅 pending，欠款回升） |
+| GET/POST | /api/fin/payments | fin.read / fin.write | 付款单分页列表（direction/status 筛选）/ 登记付款 |
+| POST | /api/fin/payments/[id]/approve | fin.write | 付款核销（plpgsql 单事务，递减应付，超付 400） |
+| POST | /api/fin/payments/[id]/cancel | fin.write | 作废付款单（仅 pending） |
+| GET | /api/fin/ap-bills | fin.read | 应付单列表（已入库采购订单物化，含 settles/余额/状态，keyword+status） |
+| DELETE | /api/fin/payments/[id] | fin.write | 删除付款单（仅 pending） |
 | GET | /api/report/overview | 已登录 | 经营报表汇总：cards(采购/销售/毛利/应收应付/库存总值) + buckets(今日/本月/累计) + trends(近12月趋势) |
 | GET | /api/report/purchase | 已登录 | 采购报表（groupBy=suppider/month，from/to 过滤） |
 | GET | /api/report/sales | 已登录 | 销售报表（groupBy=customer/product/month，from/to 过滤） |
@@ -184,13 +190,15 @@
 
 ### 财务模块约定（fin_*）
 
-- **表**：单表 `fin_payments` 承载收付款单——`doc_no` 唯一（收款 `RCyyyymmdd-NNNN`、付款 `PYyyyymmdd-NNNN`）、`direction`(receipt/payment)、`customer_id`/`supplier_id` 二选一 FK（方向决定哪个非空）、`order_id`+`order_no` 冗余快照（关联订单可空，不建 FK，因方向不同指向 so/po 两张表）、`amount numeric(14,2)`、`method`(cash/bank/wechat/alipay/other)、`paid_at`、`created_by` FK。
-- **欠款口径**：客户应收 = Σ(shipped/completed 销售订单总额) − Σ(approved 销售退货) − Σ(该客户收款)；供应商应付 = Σ(received/completed 采购订单总额) + Σ(蓝字−红字冲回净差) − Σ(approved 采购退货) − Σ(该供应商付款)。汇总在服务端内存聚合（先分页查客户/供应商，再批量聚合该页 ID 的订单与收付款），不建数据库视图，保持 SDK-only 约束。
-- **超额拦截**：登记收/付款时校验不超该客户/供应商当前欠款，超出返回 400 `FIN.OVER_AMOUNT`（含剩余金额提示）；关联订单时另校验订单归属与 已出库/已入库 状态。预付/预收科目留待后续里程碑。
-- **删除即回滚**：MVP 允许 DELETE 收付款单（欠款相应回升）；正式财务场景后续改红冲。
-- **权限**：`fin.read` / `fin.write`（manager 读写、staff 只读）。
-- **仪表盘**：`/api/stats/overview` 返回 `finance:{receivable_outstanding, payable_outstanding}`。
-- **前端**：`src/components/finance/balance-list.tsx` 欠款汇总列表（kind 区分应收/应付，行内收/付款按钮）、`payment-form-dialog.tsx` 登记对话框（金额预填当前欠款）；页面 `/finance/receivables`、`/finance/payables`、`/finance/payments`（流水台账，可删除）。
+- **表**：单表 `fin_payments` 承载收付款单——`doc_no` 唯一（收款 `RCyyyymmdd-NNNN`、付款 `PYyyyymmdd-NNNN`）、`direction`(receipt/payment)、`customer_id`/`supplier_id` 二选一 FK（方向决定哪个非空）、`order_id`+`order_no` 冗余快照（关联订单可空，不建 FK，因方向不同指向 so/po 两张表；**收款单关联销售订单即应收单、付款单关联采购订单即应付单，供核销明细可溯**）、`amount numeric(14,2)`、`method`(cash/bank/wechat/alipay/other)、`paid_at`、`bill_no`（对账单号，可选）、`created_by` FK、核销状态列 `status`(pending待核销/approved已核销/cancelled作废，默认 approved 兼容旧数据)、`approved_by/approved_at`、`cancelled_by/cancelled_at`、`bill_no`/`status` 索引(`fin_payments_bill_no_idx`/`fin_payments_status_idx`)。
+- **应收/应付单（物化，不建物理表）**：应收单=已出库销售订单（status∈shipped/completed）、应付单=已入库采购订单（status∈received/completed），由 `GET /api/fin/ar-bills`、`ap-bills` 实时物化（SDK 只读聚合）。每单 `settled` = 该订单已核销（approved 且 order_id 指向该单）的收/付款合计，`outstanding = amount − settled`，`status`(open/settled)；支持 keyword（单号/往来单位）+ `status` 过滤。列入款随收款/付款单 `order_id` 关联而递减，未关联订单的收付款按往来单位聚合（不细分到单）。
+- **欠款口径**：客户应收 = Σ(shipped/completed 销售订单总额) − Σ(approved 销售退货) − Σ(**approved 收款**)；供应商应付 = Σ(received/completed 采购订单总额) + Σ(蓝字−红字冲回净差) − Σ(approved 采购退货) − Σ(**approved 付款**)。**仅统计 status='approved' 的收付款（审核核销后方递减余额）**；汇总在服务端内存聚合（先分页查客户/供应商，再批量聚合该页 ID 的订单与收付款），不建数据库视图，保持 SDK-only 约束。
+- **登记拦截 + plpgsql 核销**：登记收/付款时先做余额校验（Σapproved + 本次 ≤ 该往来单位欠款，超出返回 400 `FIN.OVER_AMOUNT`）；核销（审核通过）由 plpgsql 单事务 `fin_apply_receipt`/`fin_apply_payment` 执行——FOR UPDATE 锁客户/供应商行防并发错账、校验不超该单位剩余欠款（超收/超付 `RAISE 'FIN_OVER_AMOUNT' ERRCODE='P0001'`→400 `FIN.OVER_AMOUNT`），成功后单据→approved 并记核销人。作废 `fin_cancel_receipt`/`fin_cancel_payment` 仅限 pending（未核销）。终审 RPC 失败自动保证余额不变（事务回滚）。
+- **删除即回滚**：仅 `pending`（未核销）收付款单可 DELETE（欠款相应回升）；已核销/作废单据删除返回 400 `FIN.BAD_TRANSITION`（正式红冲留待后续里程碑）。
+- **RPC 错误映射**（`src/server/finance/payments.ts#throwFinRpcError`，参照 inventory/shared.ts 关键字匹配）：`FIN_OVER_AMOUNT`/P0001→400 `FIN.OVER_AMOUNT`、`FIN_NOT_FOUND`→404、`FIN_BAD_STATE`/`FIN_BAD_PARAM`→400 `FIN.BAD_TRANSITION`。
+- **权限**：`fin.read` / `fin.write`（manager 读写、staff 只读）；核销/作废/删除均需 `fin.write`。
+- **仪表盘**：`/api/stats/overview` 返回 `finance:{receivable_outstanding, payable_outstanding}`（仅统计 approved 收付款）。
+- **前端**：`src/components/finance/balance-list.tsx` 欠款汇总列表（kind 区分应收/应付，行内收/付款按钮）、`payment-form-dialog.tsx` 登记对话框（金额预填当前欠款）、`fin-bills.tsx` 应收/应付单明细表格（金额/已核销/余额/状态）；页面 `/finance/receivables`、`/finance/payables`（汇总 + 应收/应付单表格）、`/finance/payments`（流水台账：类型/状态筛选、pending 行内核销/作废、核销单号列）。
 
 ### 销售模块约定（so_*，V2 三单主链路）
 
@@ -268,7 +276,7 @@ src/
 │   └── finance/                 # 财务通用：欠款汇总列表(kind 区分应收应付) / 收付款登记对话框
 ├── lib/                     # api-client / types / use-paged-list(支持 filters)
 └── storage/database/        # supabase-client.ts + shared/schema.ts
-db/migrations/               # 版本化 SQL（0001 基础+认证 / 0002 采购 / 0003 销售 / 0004 库存 / 0005 财务 / 0006 采购 V2 五单+审批+成本+冲回 / 0007 销售 V2 出库+退货+等级报价 / 0008 库存 V2 多仓+批次+调拨+盘点+预警 / 0009 周边：系统字典 dict_* + 计量单位 md_units）
+db/migrations/               # 版本化 SQL（0001 基础+认证 / 0002 采购 / 0003 销售 / 0004 库存 / 0005 财务 / 0006 采购 V2 五单+审批+成本+冲回 / 0007 销售 V2 出库+退货+等级报价 / 0008 库存 V2 多仓+批次+调拨+盘点+预警 / 0009 周边：系统字典 dict_* + 计量单位 md_units / 0010 财务 V2 应收应付核销：fin_payments 加核销状态列+索引+fin_apply_receipt/payment 与 fin_cancel_receipt/payment plpgsql 函数（幂等 + RLS））
 scripts/seed-dev.ts          # DEV 测试账号种子
 ```
 

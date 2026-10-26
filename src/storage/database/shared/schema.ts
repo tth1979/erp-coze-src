@@ -756,6 +756,17 @@ export const finPayments = pgTable(
     method: varchar("method", { length: 32 }).notNull().default("bank"),
     /** 收付款日期（YYYY-MM-DD） */
     paid_at: date("paid_at", { mode: "string" }).notNull(),
+    /**
+     * 状态：pending(待核销) | approved(已核销/生效) | cancelled(作废)。
+     * 默认 approved 兼容历史数据（登记即生效）；新建单据默认 pending，审核核销后才递减应收/应付。
+     */
+    status: varchar("status", { length: 20 }).notNull().default("approved"),
+    /** 核销对象单号快照（收款→应收单号/销售订单号；付款→应付单号/采购订单号），供台账追溯 */
+    bill_no: varchar("bill_no", { length: 32 }),
+    approved_by: varchar("approved_by", { length: 36 }).references(() => sysUsers.id),
+    approved_at: timestamp("approved_at", { withTimezone: true }),
+    cancelled_by: varchar("cancelled_by", { length: 36 }).references(() => sysUsers.id),
+    cancelled_at: timestamp("cancelled_at", { withTimezone: true }),
     remark: text("remark"),
     created_by: varchar("created_by", { length: 36 }).references(() => sysUsers.id),
     created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
@@ -763,6 +774,7 @@ export const finPayments = pgTable(
   },
   (table) => [
     index("fin_payments_direction_idx").on(table.direction),
+    index("fin_payments_status_idx").on(table.status),
     index("fin_payments_customer_idx").on(table.customer_id),
     index("fin_payments_supplier_idx").on(table.supplier_id),
     index("fin_payments_paid_at_idx").on(table.paid_at),
