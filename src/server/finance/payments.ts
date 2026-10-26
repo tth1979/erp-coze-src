@@ -23,6 +23,7 @@ import { nextDocNo } from '@/server/doc-no';
 import { ApiError } from '@/server/http';
 import { emptyToNull, escapeOrKeyword, throwDbError, type ListQuery, type PagedResult } from '@/server/master-data/helpers';
 import { getSupabaseClient } from '@/storage/database/supabase-client';
+import { onReceiptSettle, onPaymentSettle, fetchCustomerName, fetchSupplierName } from '@/server/ledger/events';
 import type { FinPayment } from '@/storage/database/shared/schema';
 
 // ---------------------------------------------------------------------------
@@ -717,7 +718,20 @@ export async function approveReceipt(id: string, operatorId: string): Promise<Pa
     .update({ approved_by: operatorId, approved_at: new Date().toISOString() })
     .eq('id', id);
   if (uErr) throwDbError(uErr, '更新核销人');
-  return getPayment(id);
+  const view = await getPayment(id);
+  // 核销后生成收款凭证（借银行贷应收，幂等）
+  if (view.status === 'approved') {
+    const partner = view.customer_id ? await fetchCustomerName(view.customer_id) : (view.supplier_id ? await fetchSupplierName(view.supplier_id) : '');
+    await onReceiptSettle({
+      payment_id: id,
+      doc_no: view.doc_no ?? '',
+      partner,
+      amount: Number(view.amount),
+      paid_at: view.paid_at ?? new Date().toISOString().slice(0, 10),
+      operatorId,
+    });
+  }
+  return view;
 }
 
 /** 付款核销（审核通过，递减应付） */
@@ -730,7 +744,20 @@ export async function approvePayment(id: string, operatorId: string): Promise<Pa
     .update({ approved_by: operatorId, approved_at: new Date().toISOString() })
     .eq('id', id);
   if (uErr) throwDbError(uErr, '更新核销人');
-  return getPayment(id);
+  const view = await getPayment(id);
+  // 核销后生成付款凭证（借应付贷银行，幂等）
+  if (view.status === 'approved') {
+    const partner = view.customer_id ? await fetchCustomerName(view.customer_id) : (view.supplier_id ? await fetchSupplierName(view.supplier_id) : '');
+    await onPaymentSettle({
+      payment_id: id,
+      doc_no: view.doc_no ?? '',
+      partner,
+      amount: Number(view.amount),
+      paid_at: view.paid_at ?? new Date().toISOString().slice(0, 10),
+      operatorId,
+    });
+  }
+  return view;
 }
 
 /** 作废收款单（仅 pending 未核销可作废） */

@@ -177,6 +177,8 @@ export const mdProducts = pgTable(
     area_per_box: numeric("area_per_box", { precision: 10, scale: 3 }),
     reference_purchase_price: numeric("reference_purchase_price", { precision: 12, scale: 2 }),
     reference_sale_price: numeric("reference_sale_price", { precision: 12, scale: 2 }),
+    /** 销项/进项税率（%），凭证与税务引擎按此计算税额，可配 */
+    tax_rate: numeric("tax_rate", { precision: 5, scale: 2 }).notNull().default("13"),
     /** 安全库存阈值（跨仓合计现有量 ≤ 该值触发预警；0=不预警） */
     safety_stock: numeric("safety_stock", { precision: 12, scale: 3 }).notNull().default("0"),
     status: varchar("status", { length: 20 }).notNull().default("active"),
@@ -1149,3 +1151,145 @@ export type MdUnit = typeof mdUnits.$inferSelect;
 export type SoShipmentItem = typeof soShipmentItems.$inferSelect;
 export type SoReturn = typeof soReturns.$inferSelect;
 export type SoReturnItem = typeof soReturnItems.$inferSelect;
+
+// ============================================================
+// fin_ 财务凭证引擎：模板 + 凭证 + 分录（0011）
+// 事件(event_type,event_id) 唯一定位一套凭证，幂等防重
+// ============================================================
+
+/** 凭证模板：模板名(第 k 字段)+ JSONB 分录规格(spec) + 平衡兜底科目 */
+export const finVoucherTemplates = pgTable(
+  "fin_voucher_templates",
+  {
+    id: varchar("id", { length: 36 }).primaryKey().default(sql`gen_random_uuid()`),
+    /** 模板编码，业务唯一 */
+    template_code: varchar("template_code", { length: 64 }).notNull().unique(),
+    /** 模板名称 */
+    name: varchar("name", { length: 128 }).notNull(),
+    /** 业务事件类型：sales_shipment | purchase_receipt | receipt_settle | payment_settle | receipt_reverse */
+    event_type: varchar("event_type", { length: 32 }).notNull().unique(),
+    /**
+     * 分录规格 JSON：[{dc:'d'|'c', account, account_name, expr, summary}]
+     * expr 令牌：#amount(含税额) | #excl(不含税额) | #tax(税额) | #est(暂估含税额)
+     */
+    spec: jsonb("spec").notNull(),
+    /** 平衡兜底科目，尾差(0.01)归入 {account, account_name, summary} */
+    balance_to: jsonb("balance_to"),
+    is_system: boolean("is_system").notNull().default(false),
+    status: varchar("status", { length: 20 }).notNull().default("active"),
+    remark: text("remark"),
+    created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updated_at: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index("fin_voucher_templates_event_idx").on(table.event_type),
+  ],
+);
+
+/** 记账凭证：事件幂等(event)+voucher Number 唯一+借贷平衡 CHECK */
+export const finVouchers = pgTable(
+  "fin_vouchers",
+  {
+    id: varchar("id", { length: 36 }).primaryKey().default(sql`gen_random_uuid()`),
+    /** 凭证号：如 记-2026-03-0001（凭证序+日期唯一） */
+    voucher_no: varchar("voucher_no", { length: 40 }).notNull().unique(),
+    /** 记账日期（YYYY-MM-DD） */
+    voucher_date: date("voucher_date", { mode: "string" }).notNull(),
+    /** 业务事件类型（与模板一致） */
+    event_type: varchar("event_type", { length: 32 }).notNull(),
+    /** 业务事件主键（单据/核销单 id），与 event_type 联合唯一→幂等防重 */
+    event_id: varchar("event_id", { length: 36 }).notNull(),
+    /** 业务单号快照（便于追溯） */
+    ref_no: varchar("ref_no", { length: 32 }),
+    ref_summary: text("ref_summary"),
+    template_code: varchar("template_code", { length: 64 }).notNull(),
+    /** 借方合计（numeric(14,2)），balance CHECK 总借=总贷 */
+    total_debit: numeric("total_debit", { precision: 14, scale: 2 }).notNull().default("0"),
+    total_credit: numeric("total_credit", { precision: 14, scale: 2 }).notNull().default("0"),
+    /** draft(草稿,未过账) | posted(已过账) | void(红冲作废) */
+    status: varchar("status", { length: 20 }).notNull().default("posted"),
+    source: varchar("source", { length: 20 }).notNull().default("manual"),
+    created_by: varchar("created_by", { length: 36 }).references(() => sysUsers.id),
+    created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    posted_by: varchar("posted_by", { length: 36 }).references(() => sysUsers.id),
+    posted_at: timestamp("posted_at", { withTimezone: true }),
+    /** 红字冲销：原凭证号 */
+    void_of_no: varchar("void_of_no", { length: 40 }),
+    void_by: varchar("void_by", { length: 36 }).references(() => sysUsers.id),
+    void_at: timestamp("void_at", { withTimezone: true }),
+    void_remark: text("void_remark"),
+    updated_at: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    unique("fin_vouchers_event_uniq").on(table.event_type, table.event_id),
+    index("fin_vouchers_date_idx").on(table.voucher_date),
+    index("fin_vouchers_status_idx").on(table.status),
+    index("fin_vouchers_event_idx").on(table.event_type),
+    index("fin_vouchers_ref_no_idx").on(table.ref_no),
+  ],
+);
+
+/** 凭证分录行：direction 借/贷 + 科目 + 金额（红字负） */
+export const finVoucherLines = pgTable(
+  "fin_voucher_lines",
+  {
+    id: varchar("id", { length: 36 }).primaryKey().default(sql`gen_random_uuid()`),
+    voucher_id: varchar("voucher_id", { length: 36 })
+      .notNull()
+      .references(() => finVouchers.id, { onDelete: "cascade" }),
+    line_no: integer("line_no").notNull(),
+    /** d(借) | c(贷) */
+    direction: varchar("direction", { length: 2 }).notNull(),
+    account_code: varchar("account_code", { length: 32 }).notNull(),
+    account_name: varchar("account_name", { length: 64 }).notNull(),
+    amount: numeric("amount", { precision: 14, scale: 2 }).notNull(),
+    summary: text("summary"),
+    created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index("fin_voucher_lines_voucher_idx").on(table.voucher_id),
+    index("fin_voucher_lines_account_idx").on(table.account_code),
+  ],
+);
+
+// ============================================================
+// tax_ 税务（0011）：销项/进项税登记 + 税额统计
+// ============================================================
+
+/** 税额登记（销项/进项），随业务事件生成，供期间/税率汇总 */
+export const taxEntries = pgTable(
+  "tax_entries",
+  {
+    id: varchar("id", { length: 36 }).primaryKey().default(sql`gen_random_uuid()`),
+    /** tax_type: output(销项) | input(进项) */
+    tax_type: varchar("tax_type", { length: 12 }).notNull(),
+    /** 期间 YYYY-MM */
+    period: varchar("period", { length: 7 }).notNull(),
+    tax_rate: numeric("tax_rate", { precision: 5, scale: 2 }).notNull(),
+    /** 含税金额 */
+    amount: numeric("amount", { precision: 14, scale: 2 }).notNull(),
+    /** 不含税金额 */
+    base_amount: numeric("base_amount", { precision: 14, scale: 2 }).notNull(),
+    /** 税额 */
+    tax_amount: numeric("tax_amount", { precision: 14, scale: 2 }).notNull(),
+    /** 关联业务单号急照 */
+    doc_no: varchar("doc_no", { length: 32 }),
+    ref_type: varchar("ref_type", { length: 32 }),
+    ref_id: varchar("ref_id", { length: 36 }),
+    source: varchar("source", { length: 20 }).notNull().default("auto"),
+    status: varchar("status", { length: 20 }).notNull().default("active"),
+    created_by: varchar("created_by", { length: 36 }).references(() => sysUsers.id),
+    created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    unique("tax_entries_ref_uniq").on(table.ref_type, table.ref_id, table.tax_type),
+    index("tax_entries_period_idx").on(table.period),
+    index("tax_entries_type_idx").on(table.tax_type),
+    index("tax_entries_rate_idx").on(table.tax_rate),
+  ],
+);
+
+export type FinVoucherTemplate = typeof finVoucherTemplates.$inferSelect;
+export type FinVoucher = typeof finVouchers.$inferSelect;
+export type FinVoucherLine = typeof finVoucherLines.$inferSelect;
+export type TaxEntry = typeof taxEntries.$inferSelect;

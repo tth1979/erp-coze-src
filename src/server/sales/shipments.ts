@@ -14,6 +14,7 @@ import { nextDocNo } from '@/server/doc-no';
 import { ApiError } from '@/server/http';
 import { emptyToNull, escapeOrKeyword, throwDbError, type ListQuery, type PagedResult } from '@/server/master-data/helpers';
 import { getSupabaseClient } from '@/storage/database/supabase-client';
+import { onSalesShipment, fetchCustomerName } from '@/server/ledger/events';
 import type { SoShipment, SoShipmentItem, SysUser } from '@/storage/database/shared/schema';
 
 export interface ShipmentItemView {
@@ -322,7 +323,19 @@ export async function submitShipment(id: string, user: SysUser): Promise<Shipmen
 
 export async function approveShipment(id: string, user: SysUser, comment?: string): Promise<ShipmentView> {
   await approveCurrentStep('shipment', id, user, comment);
-  return getShipment(id);
+  const view = await getShipment(id);
+  // 终审出库后自动生成确认收入凭证 + 销项税登记（幂等）
+  if (view.status === 'approved') {
+    const customerName = await fetchCustomerName(view.customer_id);
+    await onSalesShipment({
+      shipment_id: id,
+      shipment_no: view.shipment_no,
+      customer_name: customerName,
+      items: (view.items ?? []).map((i) => ({ product_id: i.product_id, quantity: Number(i.quantity), unit_price: Number(i.unit_price) })),
+      operatorId: user.id,
+    });
+  }
+  return view;
 }
 
 export async function rejectShipment(id: string, user: SysUser, reason: string): Promise<ShipmentView> {

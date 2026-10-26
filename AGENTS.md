@@ -143,6 +143,11 @@
 | POST | /api/fin/payments/[id]/cancel | fin.write | 作废付款单（仅 pending） |
 | GET | /api/fin/ap-bills | fin.read | 应付单列表（已入库采购订单物化，含 settles/余额/状态，keyword+status） |
 | DELETE | /api/fin/payments/[id] | fin.write | 删除付款单（仅 pending） |
+| GET | /api/fin/vouchers | fin.read | 记账凭证分页（status/voucher_date_from/to/keyword/event_type 过滤，含明细行） |
+| GET / DELETE | /api/fin/vouchers/[id] | fin.read / fin.write | 凭证详情（含借贷行）/ 删除（仅未过账：status=draft，无红冲凭证） |
+| POST | /api/fin/vouchers/[id]/void | fin.write | 红字冲销（红冲冗余：原凭证→void 并生成等额反号红冲凭证，禁对已作废/已冲销重复红冲） |
+| GET | /api/tax/entries | fin.read | 税额登记分页（tax_type/period/keyword = 单号模糊） |
+| GET | /api/tax/summary | fin.read | 期间×税率税额统计（销项/进项 金额·计税基数·税额，内存聚合） |
 | GET | /api/report/overview | 已登录 | 经营报表汇总：cards(采购/销售/毛利/应收应付/库存总值) + buckets(今日/本月/累计) + trends(近12月趋势) |
 | GET | /api/report/purchase | 已登录 | 采购报表（groupBy=suppider/month，from/to 过滤） |
 | GET | /api/report/sales | 已登录 | 销售报表（groupBy=customer/product/month，from/to 过滤） |
@@ -200,6 +205,18 @@
 - **仪表盘**：`/api/stats/overview` 返回 `finance:{receivable_outstanding, payable_outstanding}`（仅统计 approved 收付款）。
 - **前端**：`src/components/finance/balance-list.tsx` 欠款汇总列表（kind 区分应收/应付，行内收/付款按钮）、`payment-form-dialog.tsx` 登记对话框（金额预填当前欠款）、`fin-bills.tsx` 应收/应付单明细表格（金额/已核销/余额/状态）；页面 `/finance/receivables`、`/finance/payables`（汇总 + 应收/应付单表格）、`/finance/payments`（流水台账：类型/状态筛选、pending 行内核销/作废、核销单号列）。
 
+### 凭证引擎 + 税务约定（fin_/tax_，0011）
+
+- **表**：`fin_voucher_templates`（模板：event_type 唯一、spec JSONB 分录规则、可配尾差归集科目 balance_to）、`fin_vouchers`（凭证：voucher_no 唯一=凭证序+日期、UNIQUE(event_type,event_id) 幂等、CHECK total_debit=total_credit、status posted/void、红冲字段 void_of_no/void_by/at）、`fin_voucher_lines`（借贷行：direction/account_code/account_name/amount/summary，FK cascade）、`tax_entries`（销项/进项登记：UNIQUE(ref_type,ref_id,tax_type)、period 期间、rate/base/amount/tax）。均为幂等表+RLS。
+- **口径**：单据金额为**含税价**；单税率（按 `md_products.tax_rate`，缺省 13%）拆分：`tax=round2(amount*r/(100+r))`、`excl=round2(amount-tax)`；多税率按行累加；尾差（借≠贷且舍入/0.01 内）归入模板 `balance_to` 指定科目（如管理费用）；超过阈值则该事件抛错不生成。
+- **五套事件模板（内置种子）**：`sales_shipment`(借应收/贷主营收入+销项税)、`purchase_receipt`(借库存+进项税/贷应付；暂估单不确认进项税)、`receipt_settle`(借银行/贷应收)、`payment_settle`(借应付/贷银行)、`receipt_reverse`(红字冲销暂估-借库存-贷应付-暂估 各 `-est`，+ 蓝字按发票价借库存+进项税/贷应付)。
+- **自动生成**：`src/server/ledger/events.ts`（onSalesShipment/onPurchaseReceipt/onReceiptSettle/onPaymentSettle/onReceiptReverse）在各业务终审/核销/冲回服务 RPC 成功后调用——凭证 `ensureVoucher`（按 event 幂等防重）+ 税额 `registerTaxEntry`（按 ref 幂等）；`computeItemsTax` 按商品税率聚合。配销项：销售出库（含一键发货）；进项：采购入库非暂估 + 暂估冲回蓝字。
+- **红字冲销**：`POST /api/fin/vouchers/[id]/void` 仅对已过账(unvoid)凭证——原凭证 status→void，自动生成等额反号红冲凭证（event_type=void、source=redline），旧凭证与红冲凭证均不可再红冲（400）。DELETE 仅限 status=draft（未过账）且无红冲凭证。
+- **税额统计**：`GET /api/tax/summary` 按(period,tax_rate) 内存聚合 output/input 的金额/计税基数/税额，为报税提供口径（SDK-only，不建视图；不做完整申报）。
+- **正确性回归**：`scripts/ledger-golden.ts`（`pnpm tsx scripts/ledger-golden.ts`）纯函数 23 条断言（buildVoucherEntries 借贷平衡/尾差归集/五模板分录、含税拆分、多税率），CI 必跑。
+- **权限**：凭证与税务读 `fin.read`（staff 只读）、红冲/删除/税额写 `fin.write`（manager）。
+- **前端**：`/finance/vouchers`（凭证列表：日期/状态筛选、查看借贷行明细、行内红冲）、`/tax/taxes`（期间×税率税额汇总 + 登记明细）；导航「财务→记账凭证、税务→税额统计」。
+
 ### 销售模块约定（so_*，V2 三单主链路）
 
 - **三单**：订单 `so_sales_orders`(SO) → 出库单 `so_shipments`(SH) → 退货单 `so_returns`(SR)；明细表 `so_sales_order_items` / `so_shipment_items`（含 `cost` 成本列）/ `so_return_items`（含 `unit_cost` 快照列）。订单/出库/退货表均带审批列（approval_level/current_step/submitted_by/at/approved_by/at/reject_reason）。
@@ -253,6 +270,8 @@ src/
 │   ├── sales/               # 销售 V2：orders(订单+quote 等级报价) / shipments(出库+成本结转) / returns(退货红字回补)
 │   ├── inventory/           # 库存服务（stock 余额/warehouses 仓库/batches 批次/alerts 预警/movements 流水/transfers 调拨/checks 盘点/RPC 错误映射）
 │   ├── finance/             # 财务服务（payments 收付款单 CRUD + 应收/应付欠款汇总 + 超额校验）
+│   ├── ledger/              # 凭证引擎（ledger 模板+平衡+幂等+红冲 / events 业务事件接入层 computeItemsTax+fetchName）
+│   ├── tax/                 # 税务（tax 销项/进项登记 + 期间×税率税额统计）
 │   ├── reporting/           # 报表服务（overview 汇总卡片+趋势 / purchase / sales / inventory 分组聚合 / parse/shared）
 │   └── dict/                # 系统字典（dict.ts：类型/项的查询校验序列化 + lookup 引用）
 ├── app/api/                 # Route Handlers（薄层，调 server 服务）
@@ -273,10 +292,10 @@ src/
 │   ├── purchase/                # 采购 V2 通用：approval-panel(审批步骤+操作) / doc-item-editor(明细编辑器)
 │   ├── inventory/             # 库存通用：warehouse-select（仓下拉，filter 模式+表单模式）
 │   ├── reports/               # 报表图表：bar-chart(纯 SVG 横向柱状+formatMoney) / line-chart / report-panel(分组+打印)
-│   └── finance/                 # 财务通用：欠款汇总列表(kind 区分应收应付) / 收付款登记对话框
+│   └── finance/                 # 财务通用：欠款汇总列表(kind 区分应收应付) / 收付款登记对话框 / 凭证/税务页面组件
 ├── lib/                     # api-client / types / use-paged-list(支持 filters)
 └── storage/database/        # supabase-client.ts + shared/schema.ts
-db/migrations/               # 版本化 SQL（0001 基础+认证 / 0002 采购 / 0003 销售 / 0004 库存 / 0005 财务 / 0006 采购 V2 五单+审批+成本+冲回 / 0007 销售 V2 出库+退货+等级报价 / 0008 库存 V2 多仓+批次+调拨+盘点+预警 / 0009 周边：系统字典 dict_* + 计量单位 md_units / 0010 财务 V2 应收应付核销：fin_payments 加核销状态列+索引+fin_apply_receipt/payment 与 fin_cancel_receipt/payment plpgsql 函数（幂等 + RLS））
+db/migrations/               # 版本化 SQL（0001 基础+认证 / 0002 采购 / 0003 销售 / 0004 库存 / 0005 财务 / 0006 采购 V2 五单+审批+成本+冲回 / 0007 销售 V2 出库+退货+等级报价 / 0008 库存 V2 多仓+批次+调拨+盘点+预警 / 0009 周边：系统字典 dict_* + 计量单位 md_units / 0010 财务 V2 应收应付核销：fin_payments 加核销状态列+索引+fin_apply_receipt/payment 与 fin_cancel_receipt/payment plpgsql 函数（幂等 + RLS） / 0011 财务凭证引擎+税务：fin_voucher_templates/fin_vouchers/fin_voucher_lines + tax_entries 表、md_products.tax_rate列、5 组内置凭证模板（均幂等 + RLS））
 scripts/seed-dev.ts          # DEV 测试账号种子
 ```
 

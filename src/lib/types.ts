@@ -63,6 +63,8 @@ export interface Product {
   reference_sale_price: string | null;
   /** 安全库存阈值（库存预警用） */
   safety_stock: string | null;
+  /** 税率（%），凭证/税务引擎据此计税额 */
+  tax_rate: string | null;
   status: string;
   remark: string | null;
   created_at: string;

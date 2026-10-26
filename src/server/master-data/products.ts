@@ -25,6 +25,8 @@ export interface ProductInput {
   reference_sale_price?: number | null;
   /** 安全库存阈值（库存预警用；null/0 = 不预警） */
   safety_stock?: number | null;
+  /** 销项/进项税率（%），凭证与税务引擎据此计税额 */
+  tax_rate?: number | null;
   status?: string;
   remark?: string | null;
 }
@@ -47,7 +49,8 @@ function normalize(input: ProductInput) {
     area_per_box: input.area_per_box ?? null,
     reference_purchase_price: input.reference_purchase_price ?? null,
     reference_sale_price: input.reference_sale_price ?? null,
-    safety_stock: input.safety_stock ?? null,
+    safety_stock: input.safety_stock ?? 0,
+    tax_rate: input.tax_rate ?? 13,
     status: input.status ?? 'active',
     remark: emptyToNull(input.remark),
   };

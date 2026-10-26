@@ -46,6 +46,7 @@ const EMPTY = {
   reference_purchase_price: '',
   reference_sale_price: '',
   safety_stock: '',
+  tax_rate: '',
   status: 'active',
   remark: '',
 };
@@ -82,6 +83,7 @@ export function ProductFormDialog({ open, onOpenChange, initial, onSaved }: Prod
         reference_purchase_price: initial.reference_purchase_price ?? '',
         reference_sale_price: initial.reference_sale_price ?? '',
         safety_stock: initial.safety_stock === null || initial.safety_stock === undefined ? '' : String(initial.safety_stock),
+        tax_rate: initial.tax_rate === null || initial.tax_rate === undefined ? '' : String(initial.tax_rate),
         status: initial.status,
         remark: initial.remark ?? '',
       });
@@ -105,6 +107,7 @@ export function ProductFormDialog({ open, onOpenChange, initial, onSaved }: Prod
         reference_purchase_price: toNumber(form.reference_purchase_price),
         reference_sale_price: toNumber(form.reference_sale_price),
         safety_stock: toNumber(form.safety_stock),
+        tax_rate: toNumber(form.tax_rate),
       };
       const body = JSON.stringify(payload);
       if (initial) {
@@ -221,6 +224,10 @@ export function ProductFormDialog({ open, onOpenChange, initial, onSaved }: Prod
             <div className="space-y-2">
               <Label htmlFor="p-ss">安全库存</Label>
               <Input id="p-ss" type="number" min={0} step="any" value={form.safety_stock} onChange={(e) => set('safety_stock')(e.target.value)} placeholder="低于该值触发预警" />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="p-tax">税率（%）</Label>
+              <Input id="p-tax" type="number" min={0} step="any" value={form.tax_rate ?? ''} onChange={(e) => set('tax_rate')(e.target.value)} placeholder="默认 13" />
             </div>
           </div>
           <div className="space-y-2">

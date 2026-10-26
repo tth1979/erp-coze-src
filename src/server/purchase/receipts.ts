@@ -14,6 +14,7 @@ import { ApiError } from '@/server/http';
 import { throwInventoryRpcError } from '@/server/inventory/shared';
 import { emptyToNull, escapeOrKeyword, throwDbError, type ListQuery, type PagedResult } from '@/server/master-data/helpers';
 import { approveCurrentStep, listSteps, rejectCurrentStep, submitDocument, type ApprovalStepView } from '@/server/approval/engine';
+import { onPurchaseReceipt, onReceiptReverse, fetchSupplierName } from '@/server/ledger/events';
 import { getSupabaseClient } from '@/storage/database/supabase-client';
 import type { PoPurchaseOrderItem, PoReceipt, PoReceiptItem, SysUser } from '@/storage/database/shared/schema';
 
@@ -390,7 +391,20 @@ export async function submitReceipt(id: string, user: SysUser): Promise<ReceiptV
 /** 审核通过（终审由 po_execute_receipt 完成入库 + 成本 + 流水） */
 export async function approveReceipt(id: string, user: SysUser, comment?: string): Promise<ReceiptView> {
   await approveCurrentStep('receipt', id, user, comment);
-  return getReceipt(id);
+  const view = await getReceipt(id);
+  // 终审入库后自动生成记账凭证 + 进项税登记（幂等）
+  if (view.status === 'approved') {
+    const supplierName = await fetchSupplierName(view.supplier_id);
+    await onPurchaseReceipt({
+      receipt_id: id,
+      receipt_no: view.receipt_no,
+      supplier_name: supplierName,
+      is_estimated: view.is_estimated,
+      items: (view.items ?? []).map((i) => ({ product_id: i.product_id, quantity: Number(i.quantity), unit_price: Number(i.unit_price) })),
+      operatorId: user.id,
+    });
+  }
+  return view;
 }
 
 export async function rejectReceipt(id: string, user: SysUser, reason: string): Promise<ReceiptView> {
@@ -424,5 +438,18 @@ export async function reverseReceipt(id: string, input: ReceiptReverseInput, use
     p_user_id: user.id,
   });
   if (error) throwInventoryRpcError(error, '暂估冲回');
-  return getReceipt(id);
+  const view = await getReceipt(id);
+  // 红蓝冲回后生成暂估冲回凭证 + 进项税登记（幂等）
+  if (view.status === 'reversed') {
+    const supplierName = await fetchSupplierName(view.supplier_id);
+    await onReceiptReverse({
+      receipt_id: id,
+      receipt_no: input.invoice_no || existing.receipt_no,
+      supplier_name: supplierName,
+      est_total: Number(existing.total_amount),
+      invoice_items: input.items.map((it) => ({ product_id: it.product_id, quantity: it.quantity, unit_price: it.unit_price })),
+      operatorId: user.id,
+    });
+  }
+  return view;
 }
