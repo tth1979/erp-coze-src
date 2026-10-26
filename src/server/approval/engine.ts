@@ -25,7 +25,8 @@ export type ApprovalDocType =
   | 'shipment'
   | 'sales_return'
   | 'transfer'
-  | 'check';
+  | 'check'
+  | 'manufacture';
 
 const DOC_TABLE: Record<ApprovalDocType, string> = {
   requisition: 'po_requisitions',
@@ -37,6 +38,7 @@ const DOC_TABLE: Record<ApprovalDocType, string> = {
   sales_return: 'so_returns',
   transfer: 'inv_transfers',
   check: 'inv_checks',
+  manufacture: 'ma_manufacturing_orders',
 };
 
 const DOC_NAME: Record<ApprovalDocType, string> = {
@@ -49,6 +51,7 @@ const DOC_NAME: Record<ApprovalDocType, string> = {
   sales_return: '销售退货单',
   transfer: '库存调拨单',
   check: '库存盘点单',
+  manufacture: '加工单',
 };
 
 /** 终审通过后需由数据库函数完成库存/成本流转的单据 → 函数名与参数名 */

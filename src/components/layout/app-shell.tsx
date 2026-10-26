@@ -13,6 +13,7 @@ import {
   ClipboardCheck,
   ClipboardList,
   FileSignature,
+  Factory,
   HandCoins,
   LayoutDashboard,
   Layers,
@@ -101,6 +102,12 @@ const NAV: NavGroup[] = [
       { title: '库存调拨单', href: '/inventory/transfers', icon: ArrowLeftRight, permission: 'inv.read' },
       { title: '库存盘点单', href: '/inventory/checks', icon: ClipboardCheck, permission: 'inv.read' },
       { title: '仓库档案', href: '/inventory/warehouses', icon: Warehouse, permission: 'inv.read' },
+    ],
+  },
+  {
+    group: '加工管理',
+    items: [
+      { title: '加工单', href: '/manufacturing/orders', icon: Factory, permission: 'ma.read' },
     ],
   },
   {

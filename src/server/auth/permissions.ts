@@ -15,8 +15,8 @@ export const ROLES: readonly Role[] = ['admin', 'manager', 'staff'] as const;
 
 const ROLE_PERMISSIONS: Record<Role, readonly string[]> = {
   admin: ['*'],
-  manager: ['dashboard.read', 'md.read', 'md.write', 'po.read', 'po.write', 'po.approve', 'so.read', 'so.write', 'so.approve', 'inv.read', 'inv.write', 'inv.approve', 'fin.read', 'fin.write'],
-  staff: ['dashboard.read', 'md.read', 'po.read', 'so.read', 'inv.read', 'fin.read'],
+  manager: ['dashboard.read', 'md.read', 'md.write', 'po.read', 'po.write', 'po.approve', 'so.read', 'so.write', 'so.approve', 'inv.read', 'inv.write', 'inv.approve', 'fin.read', 'fin.write', 'ma.read', 'ma.write', 'ma.approve'],
+  staff: ['dashboard.read', 'md.read', 'po.read', 'so.read', 'inv.read', 'fin.read', 'ma.read'],
 };
 
 export function isRole(value: string): value is Role {

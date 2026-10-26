@@ -696,3 +696,58 @@ export interface MdUnit {
   remark: string | null;
   is_active: boolean;
 }
+
+// ===== 加工管理（ma_*）=====
+export type MaItemKind = 'input' | 'output';
+
+export interface MaItem {
+  id: string;
+  mo_id: string;
+  line_no: number;
+  kind: MaItemKind;
+  product_id: string;
+  product_name: string;
+  sku_code: string;
+  unit_name: string;
+  quantity: number;
+  done_quantity: number;
+  unit_cost: number;
+  warehouse_id: string | null;
+}
+
+export interface MaOrder {
+  id: string;
+  doc_no: string;
+  processing_type: string;
+  loss_ratio: number;
+  status: string;
+  estimate_cost: number;
+  issued_cost: number;
+  allocated_cost: number;
+  remark: string | null;
+  approval_level: number;
+  current_step: number;
+  submitted_by: string | null;
+  submitted_at: string | null;
+  approved_by: string | null;
+  approved_at: string | null;
+  reject_reason: string | null;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+  creator_name: string | null;
+  input_count: number;
+  output_count: number;
+  steps: ApprovalStep[];
+}
+
+export interface MaOrderDetail {
+  order: MaOrder;
+  items: MaItem[];
+}
+
+export interface MaEditableItem {
+  kind: MaItemKind;
+  product_id: string;
+  quantity: number;
+}

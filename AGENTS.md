@@ -57,7 +57,8 @@
 | 报表模块（周边，V1） | `report_*`（无独立表，SDK 只读聚合） | 经营统计：汇总卡片/采购/销售/库存报表，dashboard 趋势图 |
 | 系统字典模块（周边，V1） | `dict_*` | 字典类型+字典项（计量单位/付款方式/税率/客户等级/状态），种子预置、供下拉引用 |
 | 计量单位（周边，V1） | `md_units` | 基础资料扩充：计量单位档案 + 基准单位+换算系数 |
-| 后续业务模块（预留） | `proc_*` / `tax_*` | 加工、税务 |
+| 加工模块（已交付 V1） | `ma_*` | 加工单 MO（类型/损耗/投入产出）+ 四级审批 + 分批领料/分批完工 + 加工成本雏形（按投入均价分摊入成品） |
+| 后续业务模块（预留） | `proc_*` / `tax_*` | 税务 |
 
 > 托管 PostgREST 仅暴露 public schema，故以表名前缀实现"单库逻辑多 schema"隔离。
 
@@ -159,6 +160,13 @@
 | GET | /api/dict/lookup?types=unit,payment_method | 已登录 | 只读引用：按类型(逗号分隔)返回活跃字典项映射 { data: { type: items } }，供下拉 |
 | GET/POST | /api/md/units | md.read / md.write | 计量单位分页列表（keyword）/ 新增 |
 | GET/PUT/DELETE | /api/md/units/[id] | md.read / md.write | 计量单位详情 / 更新 / 删除 |
+| GET/POST | /api/ma/orders | ma.read / ma.write | 加工单分页列表（status/processing_type 筛选）/ 新建草稿 |
+| GET/PUT/DELETE | /api/ma/orders/[id] | ma.read / ma.write | 加工单详情（含投入产出明细+审批步骤）/ 更新（draft/rejected）/ 删除（仅 draft） |
+| POST | /api/ma/orders/[id]/submit | ma.write | 提交审批（draft/rejected→pending） |
+| POST | /api/ma/orders/[id]/approve、reject | ma.approve | 审批通过当前步 / 驳回（→rejected） |
+| POST | /api/ma/orders/[id]/close | ma.write | 关闭加工单（draft/pending/rejected→closed） |
+| POST | /api/ma/orders/[id]/issue | ma.write | 分批领料 `{warehouse_id, items}`，扣原料库存（超计划 400） |
+| POST | /api/ma/orders/[id]/finish | ma.write | 分批完工 `{warehouse_id, items}`，产成品入库（损耗违约 400）；全部完成→completed |
 
 分页参数：`page`(≥1) `pageSize`(1-100) `keyword`（模糊搜索）；响应 `{ items, total, page, page_size }`。
 
@@ -237,6 +245,21 @@
 - **分组**：`GET /api/report/{purchase,sales}?groupBy=` 支持 supplier/customer/product/month（按单号/商品名聚合，from/to 日期过滤）；inventory 支持 warehouse/product。
 - **服务端**：`src/server/reporting/*`（overview/purchase/sales/inventory/parse/shared）；/api/report/* 均走 `requireAuth`（已登录即可看，无独立权限点）。
 - **前端**：`/dashboard`（指标卡+今日/本月/累计+近12月 SVG 折线趋势）、`/reports/overview|purchase|sales|inventory`（可分组切换+打印）。图表为纯 SVG/CSS 组件（`src/components/reports/bar-chart.tsx`、`line-chart.tsx`、`report-panel.tsx`），无重库依赖。
+
+### 加工模块约定（ma_*，V1）
+
+- **表**：`ma_manufacturing_orders`（加工单：doc_no=`MAyyyymmdd-NNNN`、processing_type（字典 processing_type：cut/slot/edge/combine）、loss_ratio 损耗比例 default 0.05、status draft/pending/approved/completed/closed、estimate_cost 预估(Σ投入×参考价)、issued_cost 已领料成本、allocated_cost 已分摊成本、审批列）+ `ma_manufacturing_items`（kind input 投入原料 / output 产出成品；quantity 计划 / done_quantity 已完成 / unit_cost 领料均价或完工分摊单价 / product 快照）。新表全启 RLS。
+- **状态机**：`draft` → `pending` → `approved` → `completed`；`rejected` 可编辑重提；`draft/pending/rejected` 可 `closed`。仅 `draft` 可删，`draft/rejected` 可编辑。
+- **审批**：复用通用引擎 `src/server/approval/engine.ts`，docType `manufacture`（**刻意不加 EXECUTE_RPC**，走非 rpc 分支仅置 status=approved，以支持后续分批执行）。规则种子两档金额：≤5w 一级 manager、>5w manager+admin。权限点 `ma.read`（staff 只读）/ `ma.write`（建单/领料/完工/关闭）/ `ma.approve`，均 admin+manager。
+- **执行（plpgsql 单事务，db/migrations/0012_processing.sql）**：
+  - `mo_execute_issue(p_mo_id,p_warehouse_id,p_items jsonb,p_user_id)`：仅 approved；按行校验 累计领料 ≤ 计划（超 `MA_OVER_ISSUE`）；逐个 `inv_apply_issue_out('manufacture_issue')` 扣原料（按移动加权均价），累加 `issued_cost`，返回本次领料成本。
+  - `mo_execute_finish(...)`：校验 Σ产出已完 ≤ Σ投入已完×(1−损耗)（`MA_LOSS_VIOLATION`）→ 按**未分摊成本**(issued−allocated)均摊单价 → `inv_apply_receipt_in('manufacture_finish')` 产成品入库并批次，累加 `allocated_cost`；投入+产出全部完成 → completed。
+  - 投入-产出-损耗守恒由 plpgsql CHECK/函数保证；完全完工前的累计产出受 `round(Σinput.done×(1-loss),2)` 上限约束。
+- **领料/完工为分批**：可多次 POST issue/finish，每次按 `items[]`（product_id+quantity）增量执行；`p_items` 传 JSON 数组（PostgREST jsonb 绑定，**勿 JSON.stringify 成字符串**否则 `cannot extract elements from a scalar`）。
+- **错误映射**：`src/server/processing/processing.ts#throwMaRpcError`，message 小写匹配：`ma_not_found`→404、`ma_bad_state`→400 MA.BAD_TRANSITION、`ma_over_issue`/`ma_over_output`→400、`ma_loss_violation`→400、`p0001/库存不足`→400 INV.INSUFFICIENT_STOCK、`ma_bad_param`→400。
+- **成本雏形**：产成品 `unit_cost` = (issued_cost−allocated_cost)/本次完工量，随 `inv_apply_receipt_in` 进移动加权均价，为成本引擎/毛利服务；**不强制结转凭证**（留待后续）。
+- **前端**：`/manufacturing/orders`（列表 status/processing_type 筛选 + 新建）、`/manufacturing/orders/[id]`（投入/产出明细、ApprovalPanel docType=manufacture、分批领料/完工对话框、编辑/关闭/删除）；`app-shell` 导航「加工管理→加工单」；`src/components/processing/mo-editor-dialog.tsx` 编辑器（加工类型取 `/api/dict/lookup?types=processing_type`）。
+- **动作型路由必须包 `handleError`**：加工 8 个 API 路由全部 try/catch `handleError(error)`，否则业务 400/404 会变 500。
 
 ### 系统数据字典 + 基础资料扩充约定（周边 V1）
 
