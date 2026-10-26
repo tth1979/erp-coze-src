@@ -27,7 +27,10 @@ function LoginForm() {
     try {
       await apiFetch<{ user: SessionUser; permissions: string[] }>('/api/auth/login', {
         method: 'POST',
-        body: JSON.stringify({ type: 'password', payload: { username, password } }),
+        body: JSON.stringify({
+          type: 'password',
+          payload: { username: username.trim(), password: password.trim() },
+        }),
       });
       await refresh();
       const next = searchParams.get('next');
