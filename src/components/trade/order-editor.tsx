@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { Loader2, Plus, Trash2 } from 'lucide-react';
 import { apiFetch, ApiClientError } from '@/lib/api-client';
-import type { Product, PurchaseOrder, Supplier } from '@/lib/types';
+import type { Product, PurchaseOrder, SalesOrder, TradeOrder, TradeOrderItem } from '@/lib/types';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -18,6 +18,13 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 
+/** 交易对象选项（供应商或客户，两者结构一致） */
+interface PartyOption {
+  id: string;
+  code: string;
+  name: string;
+}
+
 interface EditableItem {
   key: number;
   productId: string;
@@ -25,11 +32,47 @@ interface EditableItem {
   unitPrice: string;
 }
 
+export type TradeKind = 'purchase' | 'sales';
+
+interface TradeKindConfig {
+  /** 交易对象称谓与接口 */
+  partyLabel: string;
+  partyListEndpoint: string;
+  /** 订单接口基础路径 */
+  ordersEndpoint: string;
+  /** initial 中交易对象 ID 字段名 */
+  partyIdField: 'supplier_id' | 'customer_id';
+  /** 选中商品时带入的参考价字段 */
+  prefillPriceField: 'reference_purchase_price' | 'reference_sale_price';
+  /** 单据中文名（toast/按钮文案） */
+  docName: string;
+}
+
+const KIND_CONFIG: Record<TradeKind, TradeKindConfig> = {
+  purchase: {
+    partyLabel: '供应商',
+    partyListEndpoint: '/api/md/suppliers?page=1&pageSize=100',
+    ordersEndpoint: '/api/po/orders',
+    partyIdField: 'supplier_id',
+    prefillPriceField: 'reference_purchase_price',
+    docName: '采购订单',
+  },
+  sales: {
+    partyLabel: '客户',
+    partyListEndpoint: '/api/md/customers?page=1&pageSize=100',
+    ordersEndpoint: '/api/so/orders',
+    partyIdField: 'customer_id',
+    prefillPriceField: 'reference_sale_price',
+    docName: '销售订单',
+  },
+};
+
 interface OrderEditorProps {
+  kind: TradeKind;
   mode: 'create' | 'edit';
   /** 编辑模式下的现有订单（含 items） */
-  initial?: PurchaseOrder;
-  onSaved: (order: PurchaseOrder) => void;
+  initial?: TradeOrder;
+  onSaved: (order: TradeOrder) => void;
   onCancel?: () => void;
 }
 
@@ -37,11 +80,16 @@ function formatMoney(value: number): string {
   return `¥${value.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
-/** 采购订单编辑器：单据头 + 明细行（数量×单价，金额服务端最终复核） */
-export function OrderEditor({ mode, initial, onSaved, onCancel }: OrderEditorProps) {
-  const [suppliers, setSuppliers] = useState<Supplier[] | null>(null);
+function readPartyId(order: TradeOrder, field: 'supplier_id' | 'customer_id'): string {
+  return field === 'supplier_id' ? (order as PurchaseOrder).supplier_id : (order as SalesOrder).customer_id;
+}
+
+/** 购销订单编辑器（采购/销售共用）：单据头 + 明细行（数量×单价，金额服务端最终复核） */
+export function OrderEditor({ kind, mode, initial, onSaved, onCancel }: OrderEditorProps) {
+  const cfg = KIND_CONFIG[kind];
+  const [parties, setParties] = useState<PartyOption[] | null>(null);
   const [products, setProducts] = useState<Product[] | null>(null);
-  const [supplierId, setSupplierId] = useState(initial?.supplier_id ?? '');
+  const [partyId, setPartyId] = useState(initial ? readPartyId(initial, cfg.partyIdField) : '');
   const [orderDate, setOrderDate] = useState(initial?.order_date ?? '');
   const [remark, setRemark] = useState(initial?.remark ?? '');
   const [items, setItems] = useState<EditableItem[]>([]);
@@ -56,28 +104,29 @@ export function OrderEditor({ mode, initial, onSaved, onCancel }: OrderEditorPro
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode]);
 
-  // 加载供应商与商品选项
+  // 加载交易对象与商品选项
   useEffect(() => {
     Promise.all([
-      apiFetch<{ items: Supplier[] }>('/api/md/suppliers?page=1&pageSize=100'),
+      apiFetch<{ items: PartyOption[] }>(cfg.partyListEndpoint),
       apiFetch<{ items: Product[] }>('/api/md/products?page=1&pageSize=100'),
     ])
-      .then(([s, p]) => {
-        setSuppliers(s.items);
-        setProducts(p.items);
+      .then(([p, g]) => {
+        setParties(p.items);
+        setProducts(g.items);
       })
       .catch((error: unknown) => {
         toast.error(error instanceof ApiClientError ? error.message : '基础资料加载失败');
-        setSuppliers([]);
+        setParties([]);
         setProducts([]);
       });
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [kind]);
 
   // 编辑模式：用订单明细初始化行
   useEffect(() => {
     if (mode === 'edit' && initial?.items) {
       setItems(
-        initial.items.map((item) => ({
+        initial.items.map((item: TradeOrderItem) => ({
           key: keyRef.current++,
           productId: item.product_id,
           quantity: String(item.quantity),
@@ -112,9 +161,10 @@ export function OrderEditor({ mode, initial, onSaved, onCancel }: OrderEditorPro
     const product = products?.find((p) => p.id === productId);
     const row = items.find((item) => item.key === key);
     const patch: Partial<EditableItem> = { productId };
-    // 单价为空时带入参考进价
-    if (product?.reference_purchase_price && (!row || row.unitPrice === '')) {
-      patch.unitPrice = product.reference_purchase_price;
+    // 单价为空时带入参考价
+    const referencePrice = product?.[cfg.prefillPriceField];
+    if (referencePrice && (!row || row.unitPrice === '')) {
+      patch.unitPrice = referencePrice;
     }
     updateItem(key, patch);
   }
@@ -127,7 +177,7 @@ export function OrderEditor({ mode, initial, onSaved, onCancel }: OrderEditorPro
   }, 0);
 
   function validate(): string | null {
-    if (!supplierId) return '请选择供应商';
+    if (!partyId) return `请选择${cfg.partyLabel}`;
     if (items.length === 0) return '至少需要一行明细';
     for (const [index, item] of items.entries()) {
       if (!item.productId) return `第 ${index + 1} 行：请选择商品`;
@@ -147,8 +197,7 @@ export function OrderEditor({ mode, initial, onSaved, onCancel }: OrderEditorPro
     }
     setSubmitting(true);
     try {
-      const payload = {
-        supplier_id: supplierId,
+      const payload: Record<string, unknown> = {
         order_date: orderDate || undefined,
         remark: remark.trim() || undefined,
         items: items.map((item) => ({
@@ -157,14 +206,15 @@ export function OrderEditor({ mode, initial, onSaved, onCancel }: OrderEditorPro
           unit_price: Number(item.unitPrice),
         })),
       };
+      payload[cfg.partyIdField] = partyId;
       const saved =
         mode === 'create'
-          ? await apiFetch<PurchaseOrder>('/api/po/orders', { method: 'POST', body: JSON.stringify(payload) })
-          : await apiFetch<PurchaseOrder>(`/api/po/orders/${initial!.id}`, {
+          ? await apiFetch<TradeOrder>(cfg.ordersEndpoint, { method: 'POST', body: JSON.stringify(payload) })
+          : await apiFetch<TradeOrder>(`${cfg.ordersEndpoint}/${initial!.id}`, {
               method: 'PUT',
               body: JSON.stringify(payload),
             });
-      toast.success(mode === 'create' ? '采购订单已创建' : '采购订单已保存');
+      toast.success(mode === 'create' ? `${cfg.docName}已创建` : `${cfg.docName}已保存`);
       onSaved(saved);
     } catch (error) {
       toast.error(error instanceof ApiClientError ? error.message : '保存失败');
@@ -173,7 +223,7 @@ export function OrderEditor({ mode, initial, onSaved, onCancel }: OrderEditorPro
     }
   }
 
-  if (suppliers === null || products === null) {
+  if (parties === null || products === null) {
     return (
       <div className="space-y-3 rounded-lg border border-stone-200 bg-white p-4 sm:p-6">
         <Skeleton className="h-9 w-full" />
@@ -189,15 +239,15 @@ export function OrderEditor({ mode, initial, onSaved, onCancel }: OrderEditorPro
       <div className="rounded-lg border border-stone-200 bg-white p-4 sm:p-6">
         <div className="grid gap-4 sm:grid-cols-2">
           <div className="space-y-1.5">
-            <Label>供应商 *</Label>
-            <Select value={supplierId || undefined} onValueChange={setSupplierId}>
+            <Label>{cfg.partyLabel} *</Label>
+            <Select value={partyId || undefined} onValueChange={setPartyId}>
               <SelectTrigger className="w-full">
-                <SelectValue placeholder="选择供应商" />
+                <SelectValue placeholder={`选择${cfg.partyLabel}`} />
               </SelectTrigger>
               <SelectContent>
-                {suppliers.map((supplier) => (
-                  <SelectItem key={supplier.id} value={supplier.id}>
-                    {supplier.code} · {supplier.name}
+                {parties.map((party) => (
+                  <SelectItem key={party.id} value={party.id}>
+                    {party.code} · {party.name}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -212,7 +262,7 @@ export function OrderEditor({ mode, initial, onSaved, onCancel }: OrderEditorPro
             <Textarea
               value={remark}
               onChange={(e) => setRemark(e.target.value)}
-              placeholder="交货时间、账期等补充说明"
+              placeholder={kind === 'purchase' ? '交货时间、账期等补充说明' : '送货地址、开票要求等补充说明'}
               rows={2}
             />
           </div>
@@ -320,7 +370,7 @@ export function OrderEditor({ mode, initial, onSaved, onCancel }: OrderEditorPro
         ) : null}
         <Button type="button" onClick={() => void onSubmit()} disabled={submitting}>
           {submitting ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : null}
-          {mode === 'create' ? '创建订单（草稿）' : '保存修改'}
+          {mode === 'create' ? `创建${cfg.docName}（草稿）` : '保存修改'}
         </Button>
       </div>
     </div>

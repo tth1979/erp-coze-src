@@ -7,7 +7,7 @@ import { Eye, Plus, Search, Trash2 } from 'lucide-react';
 import { useAuth } from '@/components/auth/auth-provider';
 import { PaginationControls } from '@/components/master-data/pagination-controls';
 import { DeleteConfirmDialog } from '@/components/master-data/delete-confirm-dialog';
-import { PoStatusBadge, PO_STATUS_OPTIONS } from '@/components/purchase/po-status-badge';
+import { TradeStatusBadge, TRADE_STATUS_OPTIONS } from '@/components/trade/trade-status-badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
@@ -79,7 +79,7 @@ export default function PurchaseOrdersPage() {
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="all">全部状态</SelectItem>
-            {PO_STATUS_OPTIONS.map((opt) => (
+            {TRADE_STATUS_OPTIONS.map((opt) => (
               <SelectItem key={opt.value} value={opt.value}>
                 {opt.label}
               </SelectItem>
@@ -120,7 +120,7 @@ export default function PurchaseOrdersPage() {
                   <div className="min-w-0">
                     <div className="flex items-center gap-2">
                       <span className="font-mono text-xs text-stone-500">{order.order_no}</span>
-                      <PoStatusBadge status={order.status} />
+                      <TradeStatusBadge status={order.status} />
                     </div>
                     <div className="mt-0.5 truncate text-sm font-medium text-stone-900">
                       {order.supplier_name ?? '—'}
@@ -195,7 +195,7 @@ export default function PurchaseOrdersPage() {
                       {formatMoney(order.total_amount)}
                     </TableCell>
                     <TableCell>
-                      <PoStatusBadge status={order.status} />
+                      <TradeStatusBadge status={order.status} />
                     </TableCell>
                     <TableCell className="text-stone-600">{order.created_by_name ?? '—'}</TableCell>
                     <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>

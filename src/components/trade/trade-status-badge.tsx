@@ -7,7 +7,8 @@ const STATUS_META: Record<string, { label: string; className: string }> = {
   cancelled: { label: '已取消', className: 'border-red-600/30 bg-red-600/10 text-red-600' },
 };
 
-export function PoStatusBadge({ status }: { status: string }) {
+/** 购销单据状态徽章（采购/销售共用，状态机一致） */
+export function TradeStatusBadge({ status }: { status: string }) {
   const meta = STATUS_META[status] ?? { label: status, className: '' };
   return (
     <Badge variant="outline" className={meta.className}>
@@ -16,7 +17,7 @@ export function PoStatusBadge({ status }: { status: string }) {
   );
 }
 
-export const PO_STATUS_OPTIONS = [
+export const TRADE_STATUS_OPTIONS = [
   { value: 'draft', label: '草稿' },
   { value: 'confirmed', label: '已确认' },
   { value: 'completed', label: '已完成' },

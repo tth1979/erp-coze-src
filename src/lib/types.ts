@@ -76,6 +76,11 @@ export interface OverviewStats {
     draft: number;
     confirmed: number;
   };
+  sales_orders?: {
+    total: number;
+    draft: number;
+    confirmed: number;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -112,3 +117,45 @@ export interface PurchaseOrder {
   updated_at: string;
   items?: PurchaseOrderItem[];
 }
+
+// ---------------------------------------------------------------------------
+// 销售模块
+// ---------------------------------------------------------------------------
+
+export interface SalesOrderItem {
+  id: string;
+  product_id: string;
+  product_name: string | null;
+  product_sku: string | null;
+  product_spec: string | null;
+  quantity: number;
+  unit_price: number;
+  amount: number;
+  unit: string | null;
+}
+
+export interface SalesOrder {
+  id: string;
+  order_no: string;
+  customer_id: string;
+  customer_name: string | null;
+  /** draft | confirmed | completed | cancelled */
+  status: string;
+  order_date: string;
+  total_amount: number;
+  item_count: number;
+  remark: string | null;
+  created_by_name: string | null;
+  confirmed_at: string | null;
+  cancelled_at: string | null;
+  created_at: string;
+  updated_at: string;
+  items?: SalesOrderItem[];
+}
+
+// ---------------------------------------------------------------------------
+// 购销通用（采购/销售共用编辑器与组件）
+// ---------------------------------------------------------------------------
+
+export type TradeOrder = PurchaseOrder | SalesOrder;
+export type TradeOrderItem = PurchaseOrderItem | SalesOrderItem;

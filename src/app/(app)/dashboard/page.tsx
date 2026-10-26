@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { ArrowRight, Package, ShoppingCart, Truck, Users } from 'lucide-react';
+import { ArrowRight, Package, Receipt, ShoppingCart, Truck, Users } from 'lucide-react';
 import { apiFetch } from '@/lib/api-client';
 import type { OverviewStats } from '@/lib/types';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -24,12 +24,13 @@ export default function DashboardPage() {
   }, []);
 
   const po = stats?.purchase_orders;
+  const so = stats?.sales_orders;
 
   return (
     <div className="space-y-6">
       <div>
         <h1 className="text-lg font-semibold">仪表盘</h1>
-        <p className="text-sm text-muted-foreground">基础资料与采购业务概览</p>
+        <p className="text-sm text-muted-foreground">基础资料与采购/销售业务概览</p>
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -75,6 +76,33 @@ export default function DashboardPage() {
             )}
             <Link
               href="/purchase/orders"
+              className="mt-2 inline-flex items-center gap-1 text-sm text-primary hover:underline"
+            >
+              进入管理
+              <ArrowRight className="h-3.5 w-3.5" />
+            </Link>
+          </CardContent>
+        </Card>
+
+        {/* 销售订单卡片：总数 + 草稿/已确认子指标 */}
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground">销售订单</CardTitle>
+            <Receipt className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            {so ? (
+              <>
+                <p className="text-2xl font-semibold tabular-nums">{so.total}</p>
+                <p className="mt-1 text-xs text-muted-foreground tabular-nums">
+                  草稿 {so.draft} · 已确认 {so.confirmed}
+                </p>
+              </>
+            ) : (
+              <Skeleton className="h-8 w-16" />
+            )}
+            <Link
+              href="/sales/orders"
               className="mt-2 inline-flex items-center gap-1 text-sm text-primary hover:underline"
             >
               进入管理

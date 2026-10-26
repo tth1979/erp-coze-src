@@ -7,9 +7,9 @@ import { ArrowLeft, Ban, CheckCircle2, Pencil, Trash2 } from 'lucide-react';
 import { apiFetch, ApiClientError } from '@/lib/api-client';
 import { useAuth } from '@/components/auth/auth-provider';
 import type { PurchaseOrder } from '@/lib/types';
-import { OrderEditor } from '@/components/purchase/order-editor';
-import { PoStatusBadge } from '@/components/purchase/po-status-badge';
-import { ConfirmActionDialog } from '@/components/purchase/confirm-action-dialog';
+import { OrderEditor } from '@/components/trade/order-editor';
+import { TradeStatusBadge } from '@/components/trade/trade-status-badge';
+import { ConfirmActionDialog } from '@/components/trade/confirm-action-dialog';
 import { DeleteConfirmDialog } from '@/components/master-data/delete-confirm-dialog';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -88,6 +88,7 @@ export default function PurchaseOrderDetailPage() {
           </div>
         </div>
         <OrderEditor
+          kind="purchase"
           mode="edit"
           initial={order}
           onSaved={() => {
@@ -118,7 +119,7 @@ export default function PurchaseOrderDetailPage() {
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <h1 className="font-mono text-lg font-bold text-stone-900">{order.order_no}</h1>
-            <PoStatusBadge status={order.status} />
+            <TradeStatusBadge status={order.status} />
           </div>
           <p className="text-xs text-stone-500 sm:text-sm">{order.supplier_name ?? '供应商已删除'}</p>
         </div>

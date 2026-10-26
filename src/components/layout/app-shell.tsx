@@ -9,6 +9,7 @@ import {
   LogOut,
   Menu,
   Package,
+  Receipt,
   ShoppingCart,
   Truck,
   Users,
@@ -56,6 +57,12 @@ const NAV: NavGroup[] = [
     group: '采购管理',
     items: [
       { title: '采购订单', href: '/purchase/orders', icon: ShoppingCart, permission: 'po.read' },
+    ],
+  },
+  {
+    group: '销售管理',
+    items: [
+      { title: '销售订单', href: '/sales/orders', icon: Receipt, permission: 'so.read' },
     ],
   },
 ];

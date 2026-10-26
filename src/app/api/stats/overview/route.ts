@@ -16,19 +16,24 @@ export async function GET(request: NextRequest) {
   try {
     const { user } = await requireAuth(request);
     requirePermission(user, 'dashboard.read');
-    const [customers, suppliers, products, poTotal, poDraft, poConfirmed] = await Promise.all([
-      countRows('md_customers'),
-      countRows('md_suppliers'),
-      countRows('md_products'),
-      countRows('po_purchase_orders'),
-      countRows('po_purchase_orders', 'draft'),
-      countRows('po_purchase_orders', 'confirmed'),
-    ]);
+    const [customers, suppliers, products, poTotal, poDraft, poConfirmed, soTotal, soDraft, soConfirmed] =
+      await Promise.all([
+        countRows('md_customers'),
+        countRows('md_suppliers'),
+        countRows('md_products'),
+        countRows('po_purchase_orders'),
+        countRows('po_purchase_orders', 'draft'),
+        countRows('po_purchase_orders', 'confirmed'),
+        countRows('so_sales_orders'),
+        countRows('so_sales_orders', 'draft'),
+        countRows('so_sales_orders', 'confirmed'),
+      ]);
     return ok({
       customers,
       suppliers,
       products,
       purchase_orders: { total: poTotal, draft: poDraft, confirmed: poConfirmed },
+      sales_orders: { total: soTotal, draft: soDraft, confirmed: soConfirmed },
     });
   } catch (error) {
     return handleError(error);

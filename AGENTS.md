@@ -51,7 +51,8 @@
 | 系统模块 | `sys_*` | 用户、凭证、会话、角色权限 |
 | 基础资料模块 | `md_*` | 客户、供应商、商品主数据 |
 | 采购模块（已交付 MVP） | `po_*` | 采购订单 + 明细，状态机 draft→confirmed→completed / cancelled |
-| 后续业务模块（预留） | `so_*` / `inv_*` / `fin_*` | 销售 / 库存 / 财务 |
+| 销售模块（已交付 MVP） | `so_*` | 销售订单 + 明细，状态机同采购 |
+| 后续业务模块（预留） | `inv_*` / `fin_*` | 库存 / 财务 |
 
 > 托管 PostgREST 仅暴露 public schema，故以表名前缀实现"单库逻辑多 schema"隔离。
 
@@ -82,6 +83,10 @@
 | GET/PUT/DELETE | /api/po/orders/[id] | po.read / po.write | 订单详情（含明细）/ 更新 / 删除（仅 draft） |
 | POST | /api/po/orders/[id]/confirm | po.write | 确认订单（draft→confirmed） |
 | POST | /api/po/orders/[id]/cancel | po.write | 取消订单（draft/confirmed→cancelled） |
+| GET/POST | /api/so/orders | so.read / so.write | 销售订单分页列表 / 新建（草稿） |
+| GET/PUT/DELETE | /api/so/orders/[id] | so.read / so.write | 订单详情 / 更新 / 删除（仅 draft） |
+| POST | /api/so/orders/[id]/confirm | so.write | 确认订单（draft→confirmed） |
+| POST | /api/so/orders/[id]/cancel | so.write | 取消订单（draft/confirmed→cancelled） |
 
 分页参数：`page`(≥1) `pageSize`(1-100) `keyword`（模糊搜索）；响应 `{ items, total, page, page_size }`。
 
@@ -92,6 +97,12 @@
 - **金额**：一律服务端按明细 `quantity × unit_price` 计算行金额与总额，不信任客户端传值。
 - **状态机**：仅 `draft` 可编辑/删除；`confirmed` 不可再改明细；`completed` 待库存里程碑接入到货后流转。
 - **补偿式写入**：Supabase SDK 无多语句事务，"单头+明细"写入采用补偿模式（明细插入失败则删除单头），见 `src/server/purchase/orders.ts` 头注释；后续可迁移存储过程。
+
+### 销售模块约定（so_*）
+
+- 结构与约定完全镜像采购模块：`so_sales_orders`（customer_id FK → md_customers）+ `so_sales_order_items`；单号前缀 `SO`；权限 `so.read` / `so.write`。
+- 价格快照字段差异：采购编辑器预填 `reference_purchase_price`，销售预填 `reference_sale_price`，均以服务端重算金额为准。
+- 前端采购/销售共用 `src/components/trade/` 通用组件（order-editor 按 `kind: 'purchase' | 'sales'` 切换往来单位/接口/文案；trade-status-badge、confirm-action-dialog），新增同类单据模块时优先复用而非复制。
 
 ### 数据库工作流（强制）
 
@@ -110,20 +121,22 @@ src/
 │   ├── http.ts              # ApiError + 统一错误处理
 │   ├── auth/                # password(scrypt)/session/permissions/guard/bootstrap
 │   ├── master-data/         # 客户/供应商/商品的查询/校验/序列化 + helpers(分页/模糊搜索)
-│   └── purchase/            # 采购订单服务（单号生成/金额核算/状态流转）
+│   ├── purchase/            # 采购订单服务（单号生成/金额核算/状态流转）
+│   └── sales/               # 销售订单服务（镜像采购）
 ├── app/api/                 # Route Handlers（薄层，调 server 服务）
 ├── app/(app)/               # 登录后区域（路由组，layout 内做守卫）
-│   ├── dashboard/           # 仪表盘
+│   ├── dashboard/           # 仪表盘（含采购/销售订单统计卡片）
 │   ├── master-data/         # customers / suppliers / products 页面
-│   └── purchase/orders/     # 采购订单列表 / new / [id] 详情（详情页内切换编辑态）
+│   ├── purchase/orders/     # 采购订单列表 / new / [id] 详情（详情页内切换编辑态）
+│   └── sales/orders/        # 销售订单列表 / new / [id] 详情
 ├── components/
 │   ├── auth/auth-provider.tsx   # 会话 Context（useAuth().can()）
 │   ├── layout/app-shell.tsx     # 侧边栏 + 顶栏（移动端抽屉导航）
 │   ├── master-data/             # 表单对话框 / 分页 / 状态徽章 / 删除确认
-│   └── purchase/                # 订单编辑器(明细行) / 状态徽章 / 动作确认弹窗
+│   └── trade/                   # 购销通用：订单编辑器(kind 区分购销) / 状态徽章 / 动作确认弹窗
 ├── lib/                     # api-client / types / use-paged-list(支持 filters)
 └── storage/database/        # supabase-client.ts + shared/schema.ts
-db/migrations/               # 版本化 SQL（0001 基础+认证 / 0002 采购）
+db/migrations/               # 版本化 SQL（0001 基础+认证 / 0002 采购 / 0003 销售）
 scripts/seed-dev.ts          # DEV 测试账号种子
 ```
 

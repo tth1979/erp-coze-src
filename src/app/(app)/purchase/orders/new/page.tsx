@@ -2,7 +2,7 @@
 
 import { useRouter } from 'next/navigation';
 import { ArrowLeft } from 'lucide-react';
-import { OrderEditor } from '@/components/purchase/order-editor';
+import { OrderEditor } from '@/components/trade/order-editor';
 import { Button } from '@/components/ui/button';
 
 export default function NewPurchaseOrderPage() {
@@ -21,6 +21,7 @@ export default function NewPurchaseOrderPage() {
       </div>
 
       <OrderEditor
+        kind="purchase"
         mode="create"
         onSaved={(order) => router.replace(`/purchase/orders/${order.id}`)}
         onCancel={() => router.back()}
