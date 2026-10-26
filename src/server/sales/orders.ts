@@ -1,19 +1,22 @@
 /**
- * 销售订单服务端逻辑（so_*）
+ * 销售订单服务端逻辑（so_*，V2 审批版）
  *
- * 状态机：draft → confirmed → completed（库存里程碑接入销售出库后流转）
- *                ↘ cancelled（draft/confirmed 可取消）
- * 仅 draft 可编辑/删除；金额一律由服务端按明细行计算，不信任客户端。
+ * 状态机：draft(草稿) → pending(待审) → approved(已审) → shipped(已出库)
+ *                ↘ rejected(驳回，可编辑重提)   draft/pending/rejected → closed(关闭)
+ * 仅 draft/rejected 可编辑，仅 draft 可删除；金额一律由服务端按明细行计算，
+ * 审批通过即锁定成交价（后续出库/退货均按订单价）。
  *
- * 注意：Supabase SDK 无多语句事务，"订单头+明细"写入采用补偿模式
- * （明细失败则删除订单头），MVP 规模可接受；后续迁移存储过程或 Edge Function。
+ * 价格策略雏形：客户等级折扣（normal 100% / vip 98% / strategic 95%）× 商品参考售价，
+ * 由 quote 接口给出建议价；成交价以后端落库为准，不做强制下限（后置里程碑接价格审批）。
  */
 import { z } from 'zod';
+import { approveCurrentStep, listSteps, rejectCurrentStep, submitDocument, type ApprovalStepView } from '@/server/approval/engine';
+import { nextDocNo } from '@/server/doc-no';
 import { ApiError } from '@/server/http';
 import { throwInventoryRpcError } from '@/server/inventory/shared';
 import { emptyToNull, escapeOrKeyword, throwDbError, type ListQuery, type PagedResult } from '@/server/master-data/helpers';
 import { getSupabaseClient } from '@/storage/database/supabase-client';
-import type { SoSalesOrder, SoSalesOrderItem } from '@/storage/database/shared/schema';
+import type { SoSalesOrder, SoSalesOrderItem, SysUser } from '@/storage/database/shared/schema';
 
 // ---------------------------------------------------------------------------
 // 类型
@@ -36,17 +39,25 @@ export interface SalesOrderView {
   order_no: string;
   customer_id: string;
   customer_name: string | null;
+  customer_level: string | null;
   status: string;
   order_date: string;
   total_amount: number;
   item_count: number;
   remark: string | null;
   created_by_name: string | null;
+  approval_level: number | null;
+  current_step: number;
+  submitted_at: string | null;
+  approved_by_name: string | null;
+  approved_at: string | null;
+  reject_reason: string | null;
   confirmed_at: string | null;
   cancelled_at: string | null;
   created_at: string;
   updated_at: string;
   items?: SalesOrderItemView[];
+  steps?: ApprovalStepView[];
 }
 
 // ---------------------------------------------------------------------------
@@ -72,7 +83,7 @@ export const orderUpsertSchema = z.object({
 });
 export type OrderUpsertInput = z.infer<typeof orderUpsertSchema>;
 
-const ORDER_STATUSES = ['draft', 'confirmed', 'completed', 'cancelled'] as const;
+const ORDER_STATUSES = ['draft', 'pending', 'approved', 'rejected', 'shipped', 'closed'] as const;
 export type OrderStatus = (typeof ORDER_STATUSES)[number];
 
 // ---------------------------------------------------------------------------
@@ -87,9 +98,12 @@ function serialize(
   row: SoSalesOrder,
   extra: {
     customerName?: string | null;
+    customerLevel?: string | null;
     creatorName?: string | null;
+    approverName?: string | null;
     itemCount?: number;
     items?: SalesOrderItemView[];
+    steps?: ApprovalStepView[];
   } = {},
 ): SalesOrderView {
   return {
@@ -97,17 +111,25 @@ function serialize(
     order_no: row.order_no,
     customer_id: row.customer_id,
     customer_name: extra.customerName ?? null,
+    customer_level: extra.customerLevel ?? null,
     status: row.status,
     order_date: row.order_date,
     total_amount: toNumber(row.total_amount),
     item_count: extra.itemCount ?? 0,
     remark: row.remark,
     created_by_name: extra.creatorName ?? null,
+    approval_level: row.approval_level ?? null,
+    current_step: row.current_step ?? 0,
+    submitted_at: row.submitted_at ? new Date(row.submitted_at).toISOString() : null,
+    approved_by_name: extra.approverName ?? null,
+    approved_at: row.approved_at ? new Date(row.approved_at).toISOString() : null,
+    reject_reason: row.reject_reason ?? null,
     confirmed_at: row.confirmed_at ? new Date(row.confirmed_at).toISOString() : null,
     cancelled_at: row.cancelled_at ? new Date(row.cancelled_at).toISOString() : null,
     created_at: new Date(row.created_at).toISOString(),
     updated_at: new Date(row.updated_at).toISOString(),
     items: extra.items,
+    steps: extra.steps,
   };
 }
 
@@ -130,18 +152,7 @@ async function fetchNameMap(table: 'md_customers' | 'md_products' | 'sys_users',
 
 /** 生成销售单号 SOyyyymmdd-NNNN（唯一约束冲突时由调用方重试） */
 async function generateOrderNo(): Promise<string> {
-  const now = new Date();
-  const y = now.getFullYear();
-  const m = String(now.getMonth() + 1).padStart(2, '0');
-  const d = String(now.getDate()).padStart(2, '0');
-  const prefix = `SO${y}${m}${d}`;
-  const supabase = getSupabaseClient();
-  const { count, error } = await supabase
-    .from('so_sales_orders')
-    .select('id', { count: 'exact', head: true })
-    .like('order_no', `${prefix}%`);
-  if (error) throwDbError(error, '生成销售单号');
-  return `${prefix}-${String((count ?? 0) + 1).padStart(4, '0')}`;
+  return nextDocNo('SO', 'so_sales_orders', 'order_no');
 }
 
 interface PreparedItem {
@@ -218,6 +229,19 @@ export async function listOrders(query: ListQuery & { status?: string }): Promis
   const customerNames = await fetchNameMap('md_customers', rows.map((r) => r.customer_id));
   const creatorNames = await fetchNameMap('sys_users', rows.map((r) => r.created_by).filter((v): v is string => !!v));
 
+  // 客户等级快照（列表展示 VIP/战略 标记）
+  const customerLevels = new Map<string, string>();
+  const customerIds = [...new Set(rows.map((r) => r.customer_id))];
+  if (customerIds.length > 0) {
+    const { data: customerRows } = await supabase
+      .from('md_customers')
+      .select('id, level')
+      .in('id', customerIds);
+    for (const c of customerRows ?? []) {
+      customerLevels.set(c.id as string, (c.level as string | null) ?? 'normal');
+    }
+  }
+
   // 明细行数（本页订单）
   const orderIds = rows.map((r) => r.id);
   const itemCounts = new Map<string, number>();
@@ -235,6 +259,7 @@ export async function listOrders(query: ListQuery & { status?: string }): Promis
     items: rows.map((row) =>
       serialize(row, {
         customerName: customerNames.get(row.customer_id),
+        customerLevel: customerLevels.get(row.customer_id) ?? null,
         creatorName: row.created_by ? creatorNames.get(row.created_by) : null,
         itemCount: itemCounts.get(row.id) ?? 0,
       }),
@@ -273,7 +298,14 @@ export async function getOrder(id: string): Promise<SalesOrderView> {
   }
 
   const customerNames = await fetchNameMap('md_customers', [row.customer_id]);
+  const { data: customerRow } = await supabase
+    .from('md_customers')
+    .select('level')
+    .eq('id', row.customer_id)
+    .maybeSingle();
   const creatorNames = row.created_by ? await fetchNameMap('sys_users', [row.created_by]) : new Map<string, string>();
+  const approverNames = row.approved_by ? await fetchNameMap('sys_users', [row.approved_by]) : new Map<string, string>();
+  const steps = await listSteps('sales_order', id);
 
   const itemViews: SalesOrderItemView[] = items.map((item) => ({
     id: item.id,
@@ -289,9 +321,12 @@ export async function getOrder(id: string): Promise<SalesOrderView> {
 
   return serialize(row, {
     customerName: customerNames.get(row.customer_id),
+    customerLevel: (customerRow?.level as string | null) ?? null,
     creatorName: row.created_by ? creatorNames.get(row.created_by) : null,
+    approverName: row.approved_by ? approverNames.get(row.approved_by) : null,
     itemCount: itemViews.length,
     items: itemViews,
+    steps,
   });
 }
 
@@ -344,8 +379,8 @@ export async function createOrder(input: OrderUpsertInput, operatorId: string): 
 export async function updateOrder(id: string, input: OrderUpsertInput): Promise<SalesOrderView> {
   const supabase = getSupabaseClient();
   const existing = await getOrder(id);
-  if (existing.status !== 'draft') {
-    throw new ApiError(400, 'SO.NOT_DRAFT', '只有草稿状态的订单可以编辑');
+  if (existing.status !== 'draft' && existing.status !== 'rejected') {
+    throw new ApiError(400, 'SO.NOT_DRAFT', '只有草稿或已驳回状态的订单可以编辑');
   }
   const { items, total } = await prepareItems(input);
 
@@ -382,44 +417,107 @@ export async function deleteOrder(id: string): Promise<void> {
   if (error) throwDbError(error, '删除销售订单');
 }
 
-export async function confirmOrder(id: string): Promise<SalesOrderView> {
-  const supabase = getSupabaseClient();
-  const existing = await getOrder(id);
-  if (existing.status !== 'draft') {
-    throw new ApiError(400, 'SO.BAD_TRANSITION', '只有草稿状态的订单可以确认');
-  }
-  const { error } = await supabase
-    .from('so_sales_orders')
-    .update({ status: 'confirmed', confirmed_at: new Date().toISOString(), updated_at: new Date().toISOString() })
-    .eq('id', id);
-  if (error) throwDbError(error, '确认销售订单');
+// ---------------------------------------------------------------------------
+// 状态流转（审批引擎驱动）
+// ---------------------------------------------------------------------------
+
+/** 提交审批：draft/rejected → pending（按金额命中审批级别） */
+export async function submitOrder(id: string, user: SysUser): Promise<SalesOrderView> {
+  const order = await getOrder(id);
+  await submitDocument('sales_order', id, order.total_amount, user);
+  return getOrder(id);
+}
+
+/** 审批通过当前步（终审通过 → approved，成交价锁定） */
+export async function approveOrder(id: string, user: SysUser, comment?: string): Promise<SalesOrderView> {
+  await approveCurrentStep('sales_order', id, user, comment);
+  return getOrder(id);
+}
+
+/** 驳回当前步（→ rejected，可编辑重提） */
+export async function rejectOrder(id: string, user: SysUser, reason: string): Promise<SalesOrderView> {
+  await rejectCurrentStep('sales_order', id, user, reason);
   return getOrder(id);
 }
 
 export async function cancelOrder(id: string): Promise<SalesOrderView> {
   const supabase = getSupabaseClient();
   const existing = await getOrder(id);
-  if (existing.status !== 'draft' && existing.status !== 'confirmed') {
-    throw new ApiError(400, 'SO.BAD_TRANSITION', '当前状态不允许取消');
+  if (!['draft', 'pending', 'rejected'].includes(existing.status)) {
+    throw new ApiError(400, 'SO.BAD_TRANSITION', '当前状态不允许关闭');
   }
   const { error } = await supabase
     .from('so_sales_orders')
-    .update({ status: 'cancelled', cancelled_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+    .update({ status: 'closed', cancelled_at: new Date().toISOString(), updated_at: new Date().toISOString() })
     .eq('id', id);
-  if (error) throwDbError(error, '取消销售订单');
+  if (error) throwDbError(error, '关闭销售订单');
   return getOrder(id);
 }
 
 /**
- * 发货完成：confirmed → completed 并整单出库。
- * 强一致由数据库函数 inv_complete_sales 单事务保证；库存不足整单回滚。
+ * 一键发货出库：approved → shipped。
+ * 数据库函数 so_fulfill_order 单事务完成：自动生成已审出库单 + 扣库存 +
+ * 结转成本 + 订单置 shipped；库存不足或重复出库整单回滚。
  */
-export async function completeOrder(id: string, operatorId: string): Promise<SalesOrderView> {
+export async function completeOrder(id: string, operatorId: string): Promise<{ shipment_no: string }> {
   const supabase = getSupabaseClient();
-  const { error } = await supabase.rpc('inv_complete_sales', {
+  const { data, error } = await supabase.rpc('so_fulfill_order', {
     p_order_id: id,
     p_user_id: operatorId,
   });
   if (error) throwInventoryRpcError(error, '销售发货');
-  return getOrder(id);
+  return { shipment_no: data as string };
+}
+
+// ---------------------------------------------------------------------------
+// 价格策略雏形：客户等级折扣 × 商品参考售价 → 建议成交价
+// ---------------------------------------------------------------------------
+
+/** 客户等级折扣表（后置可迁移到配置表） */
+export const LEVEL_DISCOUNT: Record<string, number> = {
+  normal: 1,
+  vip: 0.98,
+  strategic: 0.95,
+};
+
+export interface QuoteResult {
+  customer_id: string;
+  product_id: string;
+  customer_level: string;
+  base_price: number;
+  discount: number;
+  /** 建议成交价（前端预填，可由业务员调整；订单落库即锁定） */
+  price: number;
+}
+
+/** 销售建议价：商品参考售价 × 客户等级折扣（保留两位小数） */
+export async function quotePrice(customerId: string, productId: string): Promise<QuoteResult> {
+  const supabase = getSupabaseClient();
+  const { data: customer, error: cErr } = await supabase
+    .from('md_customers')
+    .select('id, level, status')
+    .eq('id', customerId)
+    .maybeSingle();
+  if (cErr) throwDbError(cErr, '查询客户');
+  if (!customer) throw new ApiError(404, 'SO.CUSTOMER_NOT_FOUND', '客户不存在');
+
+  const { data: product, error: pErr } = await supabase
+    .from('md_products')
+    .select('id, reference_sale_price, status')
+    .eq('id', productId)
+    .maybeSingle();
+  if (pErr) throwDbError(pErr, '查询商品');
+  if (!product) throw new ApiError(404, 'SO.PRODUCT_NOT_FOUND', '商品不存在');
+
+  const level = (customer.level as string | null) ?? 'normal';
+  const discount = LEVEL_DISCOUNT[level] ?? 1;
+  const base = toNumber(product.reference_sale_price as string | number | null);
+  return {
+    customer_id: customerId,
+    product_id: productId,
+    customer_level: level,
+    base_price: base,
+    discount,
+    price: Math.round(base * discount * 100) / 100,
+  };
 }

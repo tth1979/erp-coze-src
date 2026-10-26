@@ -1,0 +1,184 @@
+'use client';
+
+import { useCallback, useEffect, useState } from 'react';
+import Link from 'next/link';
+import { useParams, useRouter } from 'next/navigation';
+import { toast } from 'sonner';
+import { ArrowLeft, Trash2 } from 'lucide-react';
+import { useAuth } from '@/components/auth/auth-provider';
+import { DeleteConfirmDialog } from '@/components/master-data/delete-confirm-dialog';
+import { ApprovalPanel } from '@/components/purchase/approval-panel';
+import { TradeStatusBadge } from '@/components/trade/trade-status-badge';
+import { Button } from '@/components/ui/button';
+import { Skeleton } from '@/components/ui/skeleton';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
+import { apiFetch, ApiClientError } from '@/lib/api-client';
+import type { SoShipment } from '@/lib/types';
+
+function formatMoney(value: number): string {
+  return `¥${value.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+/** 出库单详情：审批通过即扣减库存并结转移动加权成本（cost 列由数据库函数写入） */
+export default function ShipmentDetailPage() {
+  const params = useParams<{ id: string }>();
+  const router = useRouter();
+  const { can } = useAuth();
+  const [shipment, setShipment] = useState<SoShipment | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      setShipment(await apiFetch<SoShipment>(`/api/so/shipments/${params.id}`));
+    } catch (error) {
+      toast.error(error instanceof ApiClientError ? error.message : '出库单加载失败');
+      router.replace('/sales/shipments');
+    } finally {
+      setLoading(false);
+    }
+  }, [params.id, router]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  if (loading) {
+    return (
+      <div className="mx-auto max-w-5xl space-y-3">
+        <Skeleton className="h-8 w-56" />
+        <Skeleton className="h-72 w-full" />
+      </div>
+    );
+  }
+  if (!shipment) return null;
+
+  const canWrite = can('so.write');
+  const deletable = shipment.status === 'draft' || shipment.status === 'rejected';
+  const approved = shipment.status === 'approved';
+
+  return (
+    <div className="mx-auto max-w-5xl space-y-4">
+      <div className="flex flex-wrap items-center gap-3">
+        <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => router.back()} aria-label="返回">
+          <ArrowLeft className="h-4 w-4" />
+        </Button>
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <h1 className="truncate text-lg font-bold text-stone-900">{shipment.shipment_no}</h1>
+            <TradeStatusBadge status={shipment.status} />
+          </div>
+          <p className="text-xs text-stone-500 sm:text-sm">
+            {shipment.customer_name} · 出库日期 {shipment.ship_date}
+            {shipment.order_no ? (
+              <>
+                {' '}· 关联订单{' '}
+                <Link href={`/sales/orders/${shipment.order_id}`} className="font-mono text-orange-700 hover:underline">
+                  {shipment.order_no}
+                </Link>
+              </>
+            ) : null}
+          </p>
+        </div>
+        {canWrite && deletable ? (
+          <Button size="sm" variant="outline" className="text-red-700 hover:text-red-800" onClick={() => setDeleteOpen(true)}>
+            <Trash2 className="mr-1 h-4 w-4" />
+            删除
+          </Button>
+        ) : null}
+      </div>
+
+      <div className="grid gap-4 lg:grid-cols-3">
+        <div className="space-y-4 lg:col-span-2">
+          <div className="overflow-x-auto rounded-lg border border-stone-200 bg-white">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>商品</TableHead>
+                  <TableHead>编码</TableHead>
+                  <TableHead className="text-right">数量</TableHead>
+                  <TableHead className="text-right">单价</TableHead>
+                  <TableHead className="text-right">金额</TableHead>
+                  {approved ? <TableHead className="text-right">结转成本</TableHead> : null}
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {(shipment.items ?? []).map((item) => (
+                  <TableRow key={item.id}>
+                    <TableCell className="max-w-40 truncate font-medium text-stone-800">{item.product_name}</TableCell>
+                    <TableCell className="font-mono text-xs text-stone-600">{item.product_sku ?? '—'}</TableCell>
+                    <TableCell className="text-right tabular-nums">
+                      {item.quantity} {item.unit}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums">{formatMoney(item.unit_price)}</TableCell>
+                    <TableCell className="text-right tabular-nums">{formatMoney(item.amount)}</TableCell>
+                    {approved ? (
+                      <TableCell className="text-right tabular-nums text-stone-600">
+                        {item.cost !== null ? formatMoney(item.cost) : '—'}
+                      </TableCell>
+                    ) : null}
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+            <div className="flex items-center justify-between border-t border-stone-100 px-4 py-3 text-sm">
+              <span className="text-stone-500">{shipment.remark || '—'}</span>
+              <span className="space-x-4 font-semibold tabular-nums text-stone-900">
+                <span>合计 {formatMoney(shipment.total_amount)}</span>
+                {approved ? <span className="text-stone-600">成本 {formatMoney(shipment.total_cost)}</span> : null}
+              </span>
+            </div>
+          </div>
+          {approved ? (
+            <p className="text-xs text-stone-500">
+              本单已审核出库：库存按移动加权均价扣减，成本已结转写入明细。
+            </p>
+          ) : null}
+        </div>
+
+        <div className="space-y-4">
+          <div className="rounded-lg border border-stone-200 bg-white p-4 text-sm">
+            <h3 className="mb-2 font-medium text-stone-900">单据信息</h3>
+            <dl className="space-y-1.5 text-xs text-stone-600">
+              <div className="flex justify-between">
+                <dt>创建人</dt>
+                <dd>{shipment.created_by_name ?? '—'}</dd>
+              </div>
+              <div className="flex justify-between">
+                <dt>创建时间</dt>
+                <dd>{new Date(shipment.created_at).toLocaleString('zh-CN', { hour12: false })}</dd>
+              </div>
+            </dl>
+          </div>
+          <ApprovalPanel
+            docType="shipment"
+            docId={shipment.id}
+            status={shipment.status}
+            steps={shipment.steps ?? []}
+            currentStep={shipment.current_step}
+            approvalLevel={shipment.approval_level}
+            rejectReason={shipment.reject_reason}
+            canWrite={canWrite}
+            canApprove={can('so.approve')}
+            onChanged={() => void load()}
+          />
+        </div>
+      </div>
+
+      <DeleteConfirmDialog
+        open={deleteOpen}
+        onOpenChange={setDeleteOpen}
+        endpoint={`/api/so/shipments/${shipment.id}`}
+        name={shipment.shipment_no}
+        onDeleted={() => router.replace('/sales/shipments')}
+      />
+    </div>
+  );
+}

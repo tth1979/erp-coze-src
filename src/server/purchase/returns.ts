@@ -7,9 +7,10 @@
  * 应付联动：approved 退货总额由财务模块从供应商应付中冲减。
  */
 import { z } from 'zod';
+import { nextDocNo } from '@/server/doc-no';
 import { ApiError } from '@/server/http';
 import { emptyToNull, escapeOrKeyword, throwDbError, type ListQuery, type PagedResult } from '@/server/master-data/helpers';
-import { approveCurrentStep, listSteps, rejectCurrentStep, submitDocument, type ApprovalStepView } from '@/server/purchase/approval';
+import { approveCurrentStep, listSteps, rejectCurrentStep, submitDocument, type ApprovalStepView } from '@/server/approval/engine';
 import { getSupabaseClient } from '@/storage/database/supabase-client';
 import type { PoReturn, PoReturnItem, SysUser } from '@/storage/database/shared/schema';
 
@@ -146,14 +147,7 @@ function serialize(row: PoReturn, extra: Partial<ReturnView> = {}): ReturnView {
 
 /** 退货单号 RTyyyymmdd-NNNN */
 async function generateReturnNo(): Promise<string> {
-  const now = new Date();
-  const prefix = `RT${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
-  const { count, error } = await getSupabaseClient()
-    .from('po_returns')
-    .select('id', { count: 'exact', head: true })
-    .like('return_no', `${prefix}%`);
-  if (error) throwDbError(error, '生成退货单号');
-  return `${prefix}-${String((count ?? 0) + 1).padStart(4, '0')}`;
+  return nextDocNo('RT', 'po_returns', 'return_no');
 }
 
 // ---------------------------------------------------------------------------

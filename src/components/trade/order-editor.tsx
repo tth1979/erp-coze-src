@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { Loader2, Plus, Trash2 } from 'lucide-react';
 import { apiFetch, ApiClientError } from '@/lib/api-client';
-import type { Product, PurchaseOrder, SalesOrder, TradeOrder, TradeOrderItem } from '@/lib/types';
+import type { Product, PurchaseOrder, QuoteResult, SalesOrder, TradeOrder, TradeOrderItem } from '@/lib/types';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -17,6 +17,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+
+/** 客户等级中文标签（与 md_customers.level 枚举对应） */
+const CUSTOMER_LEVEL_LABELS: Record<string, string> = {
+  normal: '普通客户',
+  vip: 'VIP 客户',
+  strategic: '战略客户',
+};
 
 /** 交易对象选项（供应商或客户，两者结构一致） */
 interface PartyOption {
@@ -167,6 +174,19 @@ export function OrderEditor({ kind, mode, initial, onSaved, onCancel }: OrderEdi
       patch.unitPrice = referencePrice;
     }
     updateItem(key, patch);
+    // 销售模式且已选客户：按客户等级报价覆盖预填（价格策略雏形）
+    if (kind === 'sales' && partyId && (!row || row.unitPrice === '')) {
+      apiFetch<QuoteResult>(`/api/so/quote?customer_id=${partyId}&product_id=${productId}`)
+        .then((quote) => {
+          updateItem(key, { unitPrice: String(quote.price) });
+          if (quote.discount < 1) {
+            toast.info(`已按${CUSTOMER_LEVEL_LABELS[quote.customer_level] ?? '客户等级'}折扣 ${(quote.discount * 100).toFixed(0)}% 报价`);
+          }
+        })
+        .catch(() => {
+          // 报价失败时保留商品参考价
+        });
+    }
   }
 
   const total = items.reduce((sum, item) => {

@@ -12,10 +12,11 @@
  * （明细失败则删除订单头），MVP 规模可接受；后续迁移存储过程或 Edge Function。
  */
 import { z } from 'zod';
+import { nextDocNo } from '@/server/doc-no';
 import { ApiError } from '@/server/http';
 import { throwInventoryRpcError } from '@/server/inventory/shared';
 import { emptyToNull, escapeOrKeyword, throwDbError, type ListQuery, type PagedResult } from '@/server/master-data/helpers';
-import { approveCurrentStep, rejectCurrentStep, submitDocument } from '@/server/purchase/approval';
+import { approveCurrentStep, rejectCurrentStep, submitDocument } from '@/server/approval/engine';
 import { getSupabaseClient } from '@/storage/database/supabase-client';
 import type { PoPurchaseOrder, PoPurchaseOrderItem, SysUser } from '@/storage/database/shared/schema';
 
@@ -155,18 +156,7 @@ async function fetchNameMap(table: 'md_suppliers' | 'md_products' | 'sys_users',
 
 /** 生成采购单号 POyyyymmdd-NNNN（唯一约束冲突时由调用方重试） */
 async function generateOrderNo(): Promise<string> {
-  const now = new Date();
-  const y = now.getFullYear();
-  const m = String(now.getMonth() + 1).padStart(2, '0');
-  const d = String(now.getDate()).padStart(2, '0');
-  const prefix = `PO${y}${m}${d}`;
-  const supabase = getSupabaseClient();
-  const { count, error } = await supabase
-    .from('po_purchase_orders')
-    .select('id', { count: 'exact', head: true })
-    .like('order_no', `${prefix}%`);
-  if (error) throwDbError(error, '生成采购单号');
-  return `${prefix}-${String((count ?? 0) + 1).padStart(4, '0')}`;
+  return nextDocNo('PO', 'po_purchase_orders', 'order_no');
 }
 
 interface PreparedItem {

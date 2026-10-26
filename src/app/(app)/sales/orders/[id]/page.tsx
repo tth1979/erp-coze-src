@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { toast } from 'sonner';
-import { ArrowLeft, Ban, CheckCircle2, Truck, Pencil, Trash2 } from 'lucide-react';
+import { ArrowLeft, Ban, Truck, Pencil, Trash2, PackagePlus, Undo2 } from 'lucide-react';
 import { apiFetch, ApiClientError } from '@/lib/api-client';
 import { useAuth } from '@/components/auth/auth-provider';
 import type { SalesOrder } from '@/lib/types';
@@ -11,6 +11,7 @@ import { OrderEditor } from '@/components/trade/order-editor';
 import { TradeStatusBadge } from '@/components/trade/trade-status-badge';
 import { ConfirmActionDialog } from '@/components/trade/confirm-action-dialog';
 import { DeleteConfirmDialog } from '@/components/master-data/delete-confirm-dialog';
+import { ApprovalPanel } from '@/components/purchase/approval-panel';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import {
@@ -40,7 +41,6 @@ export default function SalesOrderDetailPage() {
   const [order, setOrder] = useState<SalesOrder | null>(null);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(false);
-  const [confirmOpen, setConfirmOpen] = useState(false);
   const [cancelOpen, setCancelOpen] = useState(false);
   const [completeOpen, setCompleteOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
@@ -71,10 +71,10 @@ export default function SalesOrderDetailPage() {
   }
 
   const writable = can('so.write');
-  const isDraft = order.status === 'draft';
+  const editable = order.status === 'draft' || order.status === 'rejected';
 
-  // 编辑模式（仅草稿）
-  if (editing && isDraft) {
+  // 编辑模式（草稿/已驳回）
+  if (editing && editable) {
     return (
       <div className="mx-auto max-w-4xl space-y-4">
         <div className="flex items-center gap-3">
@@ -124,46 +124,81 @@ export default function SalesOrderDetailPage() {
           </div>
           <p className="text-xs text-stone-500 sm:text-sm">{order.customer_name ?? '客户已删除'}</p>
         </div>
-        {writable && isDraft ? (
+        {writable && editable ? (
           <div className="flex flex-wrap gap-2">
             <Button variant="outline" size="sm" onClick={() => setEditing(true)}>
               <Pencil className="mr-1 h-4 w-4" />
               编辑
             </Button>
-            <Button size="sm" onClick={() => setConfirmOpen(true)}>
-              <CheckCircle2 className="mr-1 h-4 w-4" />
-              确认订单
-            </Button>
             <Button variant="outline" size="sm" onClick={() => setCancelOpen(true)}>
               <Ban className="mr-1 h-4 w-4" />
-              取消
+              关闭
             </Button>
-            <Button variant="ghost" size="sm" className="text-destructive" onClick={() => setDeleteOpen(true)}>
-              <Trash2 className="mr-1 h-4 w-4" />
-              删除
+            {order.status === 'draft' ? (
+              <Button variant="ghost" size="sm" className="text-destructive" onClick={() => setDeleteOpen(true)}>
+                <Trash2 className="mr-1 h-4 w-4" />
+                删除
+              </Button>
+            ) : null}
+          </div>
+        ) : null}
+        {writable && order.status === 'pending' ? (
+          <div className="flex flex-wrap gap-2">
+            <Button variant="outline" size="sm" onClick={() => setCancelOpen(true)}>
+              <Ban className="mr-1 h-4 w-4" />
+              关闭
             </Button>
           </div>
         ) : null}
-        {writable && order.status === 'confirmed' ? (
+        {writable && order.status === 'approved' ? (
           <div className="flex flex-wrap gap-2">
             <Button size="sm" onClick={() => setCompleteOpen(true)}>
               <Truck className="mr-1 h-4 w-4" />
               发货出库
             </Button>
-            <Button variant="outline" size="sm" onClick={() => setCancelOpen(true)}>
-              <Ban className="mr-1 h-4 w-4" />
-              取消订单
+            <Button variant="outline" size="sm" onClick={() => router.push(`/sales/shipments/new?order=${order.id}`)}>
+              <PackagePlus className="mr-1 h-4 w-4" />
+              创建出库单
+            </Button>
+          </div>
+        ) : null}
+        {writable && order.status === 'shipped' ? (
+          <div className="flex flex-wrap gap-2">
+            <Button variant="outline" size="sm" onClick={() => router.push(`/sales/returns/new?order=${order.id}`)}>
+              <Undo2 className="mr-1 h-4 w-4" />
+              创建退货单
             </Button>
           </div>
         ) : null}
       </div>
+
+      {/* 审批流程（提交/通过/驳回 + 步骤时间线） */}
+      <ApprovalPanel
+        docType="sales_order"
+        docId={order.id}
+        status={order.status}
+        steps={order.steps ?? []}
+        currentStep={order.current_step}
+        approvalLevel={order.approval_level}
+        rejectReason={order.reject_reason}
+        canWrite={writable}
+        canApprove={can('so.approve')}
+        onChanged={load}
+      />
 
       {/* 单据头 */}
       <div className="rounded-lg border border-stone-200 bg-white p-4 sm:p-6">
         <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm md:grid-cols-4">
           <div>
             <dt className="text-xs text-stone-500">客户</dt>
-            <dd className="mt-0.5 text-stone-800">{order.customer_name ?? '—'}</dd>
+            <dd className="mt-0.5 text-stone-800">
+              {order.customer_name ?? '—'}
+              {order.customer_level && order.customer_level !== 'normal' ? (
+                <span className="ml-1.5 rounded border border-orange-200 bg-orange-50 px-1 py-0.5 text-[10px] text-orange-700">
+                  {order.customer_level === 'vip' ? 'VIP' : '战略'}
+                </span>
+              ) : null}
+            </dd>
           </div>
           <div>
             <dt className="text-xs text-stone-500">下单日期</dt>
@@ -174,8 +209,8 @@ export default function SalesOrderDetailPage() {
             <dd className="mt-0.5 text-stone-800">{order.created_by_name ?? '—'}</dd>
           </div>
           <div>
-            <dt className="text-xs text-stone-500">确认时间</dt>
-            <dd className="mt-0.5 tabular-nums text-stone-800">{formatTime(order.confirmed_at)}</dd>
+            <dt className="text-xs text-stone-500">审批时间</dt>
+            <dd className="mt-0.5 tabular-nums text-stone-800">{formatTime(order.approved_at)}</dd>
           </div>
           {order.remark ? (
             <div className="col-span-2 md:col-span-4">
@@ -276,20 +311,11 @@ export default function SalesOrderDetailPage() {
 
       {/* 弹窗 */}
       <ConfirmActionDialog
-        open={confirmOpen}
-        onOpenChange={setConfirmOpen}
-        title="确认销售订单"
-        description={`确认后订单「${order.order_no}」将正式生效，不可再修改明细。确定继续吗？`}
-        actionLabel="确认订单"
-        endpoint={`/api/so/orders/${order.id}/confirm`}
-        onDone={load}
-      />
-      <ConfirmActionDialog
         open={cancelOpen}
         onOpenChange={setCancelOpen}
-        title="取消销售订单"
-        description={`取消后订单「${order.order_no}」将作废，此操作不可恢复。确定继续吗？`}
-        actionLabel="取消订单"
+        title="关闭销售订单"
+        description={`关闭后订单「${order.order_no}」将作废，此操作不可恢复。确定继续吗？`}
+        actionLabel="关闭订单"
         endpoint={`/api/so/orders/${order.id}/cancel`}
         destructive
         onDone={load}
@@ -298,7 +324,7 @@ export default function SalesOrderDetailPage() {
         open={completeOpen}
         onOpenChange={setCompleteOpen}
         title="销售发货出库"
-        description={`确认订单「${order.order_no}」发货？系统将按明细整单扣减库存；若库存不足将整单拦截、订单状态不变。完成后不可撤销。`}
+        description={`确认订单「${order.order_no}」整单发货？系统将自动生成出库单并审核扣减库存、按移动加权成本结转；若库存不足将整单拦截、订单状态不变。完成后不可撤销。`}
         actionLabel="确认发货出库"
         endpoint={`/api/so/orders/${order.id}/complete`}
         onDone={load}

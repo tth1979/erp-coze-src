@@ -17,7 +17,7 @@ import {
 } from '@/components/ui/dialog';
 
 /**
- * 审批面板（采购四单通用）：审批步骤时间线 + 提交/通过/驳回操作。
+ * 审批面板（采购四单 + 销售三单通用）：审批步骤时间线 + 提交/通过/驳回操作。
  * 通过/驳回走当前步骤；角色匹配由服务端最终裁决。
  */
 
@@ -26,6 +26,9 @@ const API_BASE: Record<string, string> = {
   order: '/api/po/orders',
   receipt: '/api/po/receipts',
   return: '/api/po/returns',
+  sales_order: '/api/so/orders',
+  shipment: '/api/so/shipments',
+  sales_return: '/api/so/returns',
 };
 
 function formatTime(value: string | null): string {
@@ -45,7 +48,7 @@ export function ApprovalPanel({
   canApprove,
   onChanged,
 }: {
-  docType: 'requisition' | 'order' | 'receipt' | 'return';
+  docType: 'requisition' | 'order' | 'receipt' | 'return' | 'sales_order' | 'shipment' | 'sales_return';
   docId: string;
   status: string;
   steps: ApprovalStep[];

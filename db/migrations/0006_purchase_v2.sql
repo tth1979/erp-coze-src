@@ -243,11 +243,13 @@ BEGIN
       USING ERRCODE = 'invalid_parameter_value';
   END IF;
 
-  -- 单号：红字 GRR / 蓝字 GRB + 日期序号
+  -- 单号：红字 GRR / 蓝字 GRB + 日期序号（取当日最大序号+1，防删除中间单后撞号）
   v_red_no  := 'GRR' || v_day || '-' || lpad((
-    SELECT (COUNT(*) + 1)::text FROM po_receipts WHERE receipt_no LIKE 'GRR' || v_day || '%'), 4, '0');
+    SELECT (COALESCE(MAX(CAST(substring(receipt_no from '-(\d+)$') AS INTEGER)), 0) + 1)::text
+    FROM po_receipts WHERE receipt_no LIKE 'GRR' || v_day || '-%'), 4, '0');
   v_blue_no := 'GRB' || v_day || '-' || lpad((
-    SELECT (COUNT(*) + 1)::text FROM po_receipts WHERE receipt_no LIKE 'GRB' || v_day || '%'), 4, '0');
+    SELECT (COALESCE(MAX(CAST(substring(receipt_no from '-(\d+)$') AS INTEGER)), 0) + 1)::text
+    FROM po_receipts WHERE receipt_no LIKE 'GRB' || v_day || '-%'), 4, '0');
 
   -- 红字单（直接 approved）：金额快照 = 原暂估金额
   INSERT INTO po_receipts
@@ -322,7 +324,8 @@ BEGIN
   END IF;
 
   v_receipt_no := 'GR' || to_char(now(), 'YYYYMMDD') || '-' || lpad((
-    SELECT (COUNT(*) + 1)::text FROM po_receipts WHERE receipt_no LIKE 'GR' || to_char(now(), 'YYYYMMDD') || '%'), 4, '0');
+    SELECT (COALESCE(MAX(CAST(substring(receipt_no from '-(\d+)$') AS INTEGER)), 0) + 1)::text
+    FROM po_receipts WHERE receipt_no LIKE 'GR' || to_char(now(), 'YYYYMMDD') || '-%'), 4, '0');
 
   INSERT INTO po_receipts
     (id, receipt_no, order_id, supplier_id, status, is_estimated, total_amount, receive_date,

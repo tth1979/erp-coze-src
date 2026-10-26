@@ -81,7 +81,9 @@ export interface OverviewStats {
   sales_orders?: {
     total: number;
     draft: number;
-    confirmed: number;
+    pending: number;
+    approved: number;
+    shipped: number;
   };
   inventory?: {
     tracked_kinds: number;
@@ -270,18 +272,107 @@ export interface SalesOrder {
   order_no: string;
   customer_id: string;
   customer_name: string | null;
-  /** draft | confirmed | completed | cancelled */
+  /** 客户等级快照：normal | vip | strategic */
+  customer_level: string | null;
+  /** draft | pending | approved | rejected | shipped | closed */
   status: string;
   order_date: string;
   total_amount: number;
   item_count: number;
   remark: string | null;
   created_by_name: string | null;
+  approval_level: number | null;
+  current_step: number;
+  submitted_at: string | null;
+  approved_by_name: string | null;
+  approved_at: string | null;
+  reject_reason: string | null;
   confirmed_at: string | null;
   cancelled_at: string | null;
   created_at: string;
   updated_at: string;
   items?: SalesOrderItem[];
+  steps?: ApprovalStep[];
+}
+
+/** 销售出库单（SH；approved 即已出库，明细 cost 为结转成本） */
+export interface SoShipment {
+  id: string;
+  shipment_no: string;
+  order_id: string;
+  order_no: string | null;
+  customer_id: string;
+  customer_name: string | null;
+  status: string;
+  ship_date: string;
+  total_amount: number;
+  total_cost: number;
+  approval_level: number | null;
+  current_step: number;
+  submitted_at: string | null;
+  approved_at: string | null;
+  reject_reason: string | null;
+  remark: string | null;
+  created_by_name: string | null;
+  created_at: string;
+  items?: Array<{
+    id: string;
+    product_id: string;
+    product_name: string | null;
+    product_sku: string | null;
+    quantity: number;
+    unit_price: number;
+    amount: number;
+    cost: number | null;
+    unit: string | null;
+  }>;
+  steps?: ApprovalStep[];
+}
+
+/** 销售退货单（SR；approved 即已红字回补库存） */
+export interface SoReturn {
+  id: string;
+  return_no: string;
+  order_id: string;
+  order_no: string | null;
+  shipment_id: string | null;
+  shipment_no: string | null;
+  customer_id: string;
+  customer_name: string | null;
+  status: string;
+  return_date: string;
+  reason: string | null;
+  total_amount: number;
+  approval_level: number | null;
+  current_step: number;
+  submitted_at: string | null;
+  approved_at: string | null;
+  reject_reason: string | null;
+  remark: string | null;
+  created_by_name: string | null;
+  created_at: string;
+  items?: Array<{
+    id: string;
+    product_id: string;
+    product_name: string | null;
+    product_sku: string | null;
+    quantity: number;
+    unit_price: number;
+    amount: number;
+    unit_cost: number | null;
+    unit: string | null;
+  }>;
+  steps?: ApprovalStep[];
+}
+
+/** 销售报价建议（客户等级折扣 × 商品参考售价） */
+export interface QuoteResult {
+  customer_id: string;
+  product_id: string;
+  customer_level: string;
+  base_price: number;
+  discount: number;
+  price: number;
 }
 
 // ---------------------------------------------------------------------------

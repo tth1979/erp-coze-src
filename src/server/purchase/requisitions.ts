@@ -7,9 +7,10 @@
  * 金额一律服务端按明细计算（quantity × suggest_price）。
  */
 import { z } from 'zod';
+import { nextDocNo } from '@/server/doc-no';
 import { ApiError } from '@/server/http';
 import { emptyToNull, escapeOrKeyword, throwDbError, type ListQuery, type PagedResult } from '@/server/master-data/helpers';
-import { approveCurrentStep, listSteps, rejectCurrentStep, submitDocument, type ApprovalStepView } from '@/server/purchase/approval';
+import { approveCurrentStep, listSteps, rejectCurrentStep, submitDocument, type ApprovalStepView } from '@/server/approval/engine';
 import { getSupabaseClient } from '@/storage/database/supabase-client';
 import type { PoRequisition, PoRequisitionItem, SysUser } from '@/storage/database/shared/schema';
 import { createOrder } from '@/server/purchase/orders';
@@ -138,14 +139,7 @@ function serialize(row: PoRequisition, extra: Partial<RequisitionView> = {}): Re
 
 /** 申请单号 PRyyyymmdd-NNNN（唯一冲突由调用方重试） */
 async function generateReqNo(): Promise<string> {
-  const now = new Date();
-  const prefix = `PR${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
-  const { count, error } = await getSupabaseClient()
-    .from('po_requisitions')
-    .select('id', { count: 'exact', head: true })
-    .like('req_no', `${prefix}%`);
-  if (error) throwDbError(error, '生成申请单号');
-  return `${prefix}-${String((count ?? 0) + 1).padStart(4, '0')}`;
+  return nextDocNo('PR', 'po_requisitions', 'req_no');
 }
 
 interface PreparedItem {

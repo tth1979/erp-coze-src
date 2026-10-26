@@ -14,7 +14,9 @@ import {
   Menu,
   Package,
   PackageCheck,
+  PackageOpen,
   Receipt,
+  RotateCcw,
   ShoppingCart,
   Truck,
   Undo2,
@@ -73,6 +75,8 @@ const NAV: NavGroup[] = [
     group: '销售管理',
     items: [
       { title: '销售订单', href: '/sales/orders', icon: Receipt, permission: 'so.read' },
+      { title: '销售出库单', href: '/sales/shipments', icon: PackageOpen, permission: 'so.read' },
+      { title: '销售退货单', href: '/sales/returns', icon: RotateCcw, permission: 'so.read' },
     ],
   },
   {

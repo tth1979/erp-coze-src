@@ -9,10 +9,11 @@
  * - 冲回净差（蓝 − 红）由财务模块计入供应商应付调整。
  */
 import { z } from 'zod';
+import { nextDocNo } from '@/server/doc-no';
 import { ApiError } from '@/server/http';
 import { throwInventoryRpcError } from '@/server/inventory/shared';
 import { emptyToNull, escapeOrKeyword, throwDbError, type ListQuery, type PagedResult } from '@/server/master-data/helpers';
-import { approveCurrentStep, listSteps, rejectCurrentStep, submitDocument, type ApprovalStepView } from '@/server/purchase/approval';
+import { approveCurrentStep, listSteps, rejectCurrentStep, submitDocument, type ApprovalStepView } from '@/server/approval/engine';
 import { getSupabaseClient } from '@/storage/database/supabase-client';
 import type { PoPurchaseOrderItem, PoReceipt, PoReceiptItem, SysUser } from '@/storage/database/shared/schema';
 
@@ -153,14 +154,7 @@ function serialize(row: PoReceipt, extra: Partial<ReceiptView> = {}): ReceiptVie
 
 /** 入库单号 GRyyyymmdd-NNNN（红蓝冲回单 GRR/GRB 由数据库函数生成） */
 async function generateReceiptNo(): Promise<string> {
-  const now = new Date();
-  const prefix = `GR${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
-  const { count, error } = await getSupabaseClient()
-    .from('po_receipts')
-    .select('id', { count: 'exact', head: true })
-    .like('receipt_no', `${prefix}%`);
-  if (error) throwDbError(error, '生成入库单号');
-  return `${prefix}-${String((count ?? 0) + 1).padStart(4, '0')}`;
+  return nextDocNo('GR', 'po_receipts', 'receipt_no');
 }
 
 // ---------------------------------------------------------------------------

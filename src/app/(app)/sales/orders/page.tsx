@@ -7,7 +7,7 @@ import { Eye, Plus, Search, Trash2 } from 'lucide-react';
 import { useAuth } from '@/components/auth/auth-provider';
 import { PaginationControls } from '@/components/master-data/pagination-controls';
 import { DeleteConfirmDialog } from '@/components/master-data/delete-confirm-dialog';
-import { TradeStatusBadge, TRADE_STATUS_OPTIONS } from '@/components/trade/trade-status-badge';
+import { TradeStatusBadge, SALES_STATUS_OPTIONS } from '@/components/trade/trade-status-badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
@@ -79,7 +79,7 @@ export default function SalesOrdersPage() {
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="all">全部状态</SelectItem>
-            {TRADE_STATUS_OPTIONS.map((opt) => (
+            {SALES_STATUS_OPTIONS.map((opt) => (
               <SelectItem key={opt.value} value={opt.value}>
                 {opt.label}
               </SelectItem>

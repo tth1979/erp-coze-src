@@ -19,6 +19,7 @@
  * 「先查匹配的 partner_id，再 in 过滤」两步法（同库存模块）。
  */
 import { z } from 'zod';
+import { nextDocNo } from '@/server/doc-no';
 import { ApiError } from '@/server/http';
 import { emptyToNull, escapeOrKeyword, throwDbError, type ListQuery, type PagedResult } from '@/server/master-data/helpers';
 import { getSupabaseClient } from '@/storage/database/supabase-client';
@@ -160,33 +161,28 @@ function serialize(row: FinPayment, names: { partner?: string | null; creator?: 
 
 /** 生成单号 RC/PYyyyymmdd-NNNN（唯一冲突由调用方重试） */
 async function generateDocNo(direction: PaymentDirection): Promise<string> {
-  const now = new Date();
-  const y = now.getFullYear();
-  const m = String(now.getMonth() + 1).padStart(2, '0');
-  const d = String(now.getDate()).padStart(2, '0');
-  const prefix = `${direction === 'receipt' ? 'RC' : 'PY'}${y}${m}${d}`;
-  const { count, error } = await getSupabaseClient()
-    .from('fin_payments')
-    .select('id', { count: 'exact', head: true })
-    .like('doc_no', `${prefix}%`);
-  if (error) throwDbError(error, '生成收付款单号');
-  return `${prefix}-${String((count ?? 0) + 1).padStart(4, '0')}`;
+  return nextDocNo(direction === 'receipt' ? 'RC' : 'PY', 'fin_payments', 'doc_no');
 }
 
 // ---------------------------------------------------------------------------
 // 欠款聚合（供创建校验与列表共用）
 // ---------------------------------------------------------------------------
 
-/** 某客户的应收汇总：completed 销售总额与已收款合计 */
+/** 某客户的应收汇总：已出库(shipped) 销售总额 − 已审退货，与已收款合计 */
 async function sumCustomer(customerId: string): Promise<{ billed: number; received: number }> {
   const supabase = getSupabaseClient();
-  const [{ data: orders, error: oErr }, { data: receipts, error: rErr }] = await Promise.all([
-    supabase.from('so_sales_orders').select('total_amount').eq('status', 'completed').eq('customer_id', customerId),
+  const [{ data: orders, error: oErr }, { data: receipts, error: rErr }, { data: returnRows, error: srErr }] = await Promise.all([
+    supabase.from('so_sales_orders').select('total_amount').in('status', ['completed', 'shipped']).eq('customer_id', customerId),
     supabase.from('fin_payments').select('amount').eq('direction', 'receipt').eq('customer_id', customerId),
+    supabase.from('so_returns').select('total_amount').eq('status', 'approved').eq('customer_id', customerId),
   ]);
   if (oErr) throwDbError(oErr, '统计客户应收');
   if (rErr) throwDbError(rErr, '统计客户已收');
-  const billed = round2((orders ?? []).reduce((s, r) => s + toNumber(r.total_amount as string), 0));
+  if (srErr) throwDbError(srErr, '统计销售退货');
+  const billed = round2(
+    (orders ?? []).reduce((s, r) => s + toNumber(r.total_amount as string), 0) -
+      (returnRows ?? []).reduce((s, r) => s + toNumber(r.total_amount as string), 0),
+  );
   const received = round2((receipts ?? []).reduce((s, r) => s + toNumber(r.amount as string), 0));
   return { billed, received };
 }
@@ -269,8 +265,8 @@ export async function createReceipt(input: ReceiptCreateInput, operatorId: strin
     if (!order || order.customer_id !== input.customer_id) {
       throw new ApiError(400, 'FIN.ORDER_MISMATCH', '关联订单不存在或不属于该客户');
     }
-    if (order.status !== 'completed') {
-      throw new ApiError(400, 'FIN.ORDER_NOT_COMPLETED', '只能关联已完成的销售订单');
+    if (!['completed', 'shipped'].includes(order.status as string)) {
+      throw new ApiError(400, 'FIN.ORDER_NOT_COMPLETED', '只能关联已出库的销售订单');
     }
     orderNo = order.order_no as string;
   }
@@ -503,7 +499,7 @@ async function pagedPartners(
   return { rows: (data ?? []) as unknown as PartnerPageRow[], total: count ?? 0 };
 }
 
-/** 批量聚合：completed 订单总额 + 收付款合计（按 partner 维度） */
+/** 批量聚合：已出库/已入库订单总额 ± 退货冲回净差 + 收付款合计（按 partner 维度） */
 async function aggregateByPartners(
   direction: PaymentDirection,
   partnerIds: string[],
@@ -514,8 +510,8 @@ async function aggregateByPartners(
   const supabase = getSupabaseClient();
   const partnerCol = direction === 'receipt' ? 'customer_id' : 'supplier_id';
   const orderTable = direction === 'receipt' ? 'so_sales_orders' : 'po_purchase_orders';
-  // 采购 V2：订单"已入库(received)"计入应付；completed 为历史数据兼容值
-  const orderStatuses = direction === 'receipt' ? ['completed'] : ['completed', 'received'];
+  // 采购 V2：订单"已入库(received)"计入应付；销售 V2：订单"已出库(shipped)"计入应收；completed 为历史数据兼容值
+  const orderStatuses = direction === 'receipt' ? ['completed', 'shipped'] : ['completed', 'received'];
 
   const [{ data: orders, error: oErr }, { data: payments, error: pErr }] = await Promise.all([
     supabase.from(orderTable).select(`${partnerCol}, total_amount`).in('status', orderStatuses).in(partnerCol, partnerIds),
@@ -533,6 +529,19 @@ async function aggregateByPartners(
     const adjustments = await supplierAdjustment(partnerIds);
     for (const [supplierId, delta] of adjustments) {
       billed.set(supplierId, round2((billed.get(supplierId) ?? 0) + delta));
+    }
+  }
+  // 销售 V2：应收 = 订单已出库总额 − 已审销售退货
+  if (direction === 'receipt') {
+    const { data: returnRows, error: srErr } = await supabase
+      .from('so_returns')
+      .select('customer_id, total_amount')
+      .eq('status', 'approved')
+      .in('customer_id', partnerIds);
+    if (srErr) throwDbError(srErr, '聚合销售退货');
+    for (const row of (returnRows ?? []) as unknown as Array<Record<string, unknown>>) {
+      const key = row.customer_id as string;
+      billed.set(key, round2((billed.get(key) ?? 0) - toNumber(row.total_amount as string)));
     }
   }
   for (const row of (payments ?? []) as unknown as Array<Record<string, unknown>>) {
@@ -597,7 +606,7 @@ export async function financeSummary(): Promise<{ receivable_outstanding: number
   const supabase = getSupabaseClient();
   const [{ data: soRows, error: soErr }, { data: rcRows, error: rcErr }, { data: poRows, error: poErr }, { data: pyRows, error: pyErr }] =
     await Promise.all([
-      supabase.from('so_sales_orders').select('total_amount').eq('status', 'completed'),
+      supabase.from('so_sales_orders').select('total_amount').in('status', ['completed', 'shipped']),
       supabase.from('fin_payments').select('amount').eq('direction', 'receipt'),
       supabase.from('po_purchase_orders').select('total_amount').in('status', ['completed', 'received']),
       supabase.from('fin_payments').select('amount').eq('direction', 'payment'),
@@ -615,12 +624,20 @@ export async function financeSummary(): Promise<{ receivable_outstanding: number
     .eq('status', 'approved')
     .not('reversal_kind', 'is', null);
   if (retErr || revErr) throwDbError(retErr ?? revErr ?? { message: 'unknown' }, '统计退货冲回');
+  // 销售 V2：应收另扣除已审销售退货
+  const { data: srRows, error: srErr } = await supabase.from('so_returns').select('total_amount').eq('status', 'approved');
+  if (srErr) throwDbError(srErr, '统计销售退货');
+  const salesReturnTotal = sum((srRows ?? []) as Array<Record<string, unknown>>, 'total_amount');
   const returnTotal = sum((retRows ?? []) as Array<Record<string, unknown>>, 'total_amount');
   const reversalNet = ((revRows ?? []) as unknown as Array<{ total_amount: string; reversal_kind: string }>).reduce(
     (s, r) => s + (r.reversal_kind === 'blue' ? 1 : -1) * toNumber(r.total_amount),
     0,
   );
-  const receivable = round2(sum((soRows ?? []) as Array<Record<string, unknown>>, 'total_amount') - sum((rcRows ?? []) as Array<Record<string, unknown>>, 'amount'));
+  const receivable = round2(
+    sum((soRows ?? []) as Array<Record<string, unknown>>, 'total_amount') -
+      salesReturnTotal -
+      sum((rcRows ?? []) as Array<Record<string, unknown>>, 'amount'),
+  );
   const payable = round2(
     sum((poRows ?? []) as Array<Record<string, unknown>>, 'total_amount') +
       reversalNet -

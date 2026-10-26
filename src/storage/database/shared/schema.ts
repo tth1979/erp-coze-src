@@ -285,12 +285,20 @@ export const soSalesOrders = pgTable(
     customer_id: varchar("customer_id", { length: 36 })
       .notNull()
       .references(() => mdCustomers.id),
-    /** 状态：draft(草稿) | confirmed(已确认) | completed(已完成) | cancelled(已取消) */
+    /** 状态：draft(草稿) | pending(待审) | approved(已审) | rejected(已驳回) | shipped(已出库) | closed(已关闭) */
     status: varchar("status", { length: 20 }).notNull().default("draft"),
     /** 下单日期（YYYY-MM-DD） */
     order_date: date("order_date", { mode: "string" }).notNull(),
-    /** 订单总额（由明细行服务端计算） */
+    /** 订单总额（由明细行服务端计算，审批通过即锁定成交价） */
     total_amount: numeric("total_amount", { precision: 14, scale: 2 }).notNull().default("0"),
+    /** 审批：命中的规则级别 / 当前步骤序号 */
+    approval_level: integer("approval_level"),
+    current_step: integer("current_step").notNull().default(0),
+    submitted_by: varchar("submitted_by", { length: 36 }),
+    submitted_at: timestamp("submitted_at", { withTimezone: true }),
+    approved_by: varchar("approved_by", { length: 36 }),
+    approved_at: timestamp("approved_at", { withTimezone: true }),
+    reject_reason: text("reject_reason"),
     remark: text("remark"),
     created_by: varchar("created_by", { length: 36 }).references(() => sysUsers.id),
     confirmed_at: timestamp("confirmed_at", { withTimezone: true }),
@@ -330,6 +338,138 @@ export const soSalesOrderItems = pgTable(
   (table) => [
     index("so_items_order_idx").on(table.order_id),
     index("so_items_product_idx").on(table.product_id),
+  ],
+);
+
+/** 销售出库单（SH；审核通过单事务扣库存并结转移动加权成本） */
+export const soShipments = pgTable(
+  "so_shipments",
+  {
+    id: varchar("id", { length: 36 }).primaryKey().default(sql`gen_random_uuid()`),
+    /** 出库单号：SHyyyymmdd-NNNN（业务唯一） */
+    shipment_no: varchar("shipment_no", { length: 32 }).notNull().unique(),
+    order_id: varchar("order_id", { length: 36 })
+      .notNull()
+      .references(() => soSalesOrders.id),
+    /** 客户快照（冗余，便于台账与权限过滤） */
+    customer_id: varchar("customer_id", { length: 36 })
+      .notNull()
+      .references(() => mdCustomers.id),
+    /** 状态：draft | pending | approved(已出库) | rejected | closed */
+    status: varchar("status", { length: 20 }).notNull().default("draft"),
+    ship_date: date("ship_date", { mode: "string" }).notNull(),
+    /** 出库金额（按订单锁定成交价计算） */
+    total_amount: numeric("total_amount", { precision: 14, scale: 2 }).notNull().default("0"),
+    /** 结转销售成本（Σ 明细 cost，审批通过后写入） */
+    total_cost: numeric("total_cost", { precision: 16, scale: 2 }).notNull().default("0"),
+    approval_level: integer("approval_level"),
+    current_step: integer("current_step").notNull().default(0),
+    submitted_by: varchar("submitted_by", { length: 36 }),
+    submitted_at: timestamp("submitted_at", { withTimezone: true }),
+    approved_by: varchar("approved_by", { length: 36 }),
+    approved_at: timestamp("approved_at", { withTimezone: true }),
+    reject_reason: text("reject_reason"),
+    remark: text("remark"),
+    created_by: varchar("created_by", { length: 36 }).references(() => sysUsers.id),
+    created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updated_at: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index("so_shipments_order_idx").on(table.order_id),
+    index("so_shipments_customer_idx").on(table.customer_id),
+    index("so_shipments_status_idx").on(table.status),
+    index("so_shipments_created_at_idx").on(table.created_at),
+  ],
+);
+
+/** 销售出库单明细 */
+export const soShipmentItems = pgTable(
+  "so_shipment_items",
+  {
+    id: varchar("id", { length: 36 }).primaryKey().default(sql`gen_random_uuid()`),
+    shipment_id: varchar("shipment_id", { length: 36 })
+      .notNull()
+      .references(() => soShipments.id, { onDelete: "cascade" }),
+    product_id: varchar("product_id", { length: 36 })
+      .notNull()
+      .references(() => mdProducts.id),
+    quantity: numeric("quantity", { precision: 12, scale: 3 }).notNull(),
+    unit_price: numeric("unit_price", { precision: 12, scale: 2 }).notNull(),
+    amount: numeric("amount", { precision: 14, scale: 2 }).notNull(),
+    /** 结转成本（= 出库时点移动加权均价 × 数量，审批通过时写入） */
+    cost: numeric("cost", { precision: 14, scale: 2 }),
+    unit: varchar("unit", { length: 16 }),
+    created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index("so_shipment_items_shipment_idx").on(table.shipment_id),
+    index("so_shipment_items_product_idx").on(table.product_id),
+  ],
+);
+
+/** 销售退货单（SR；审核通过按出库成本红字回补库存） */
+export const soReturns = pgTable(
+  "so_returns",
+  {
+    id: varchar("id", { length: 36 }).primaryKey().default(sql`gen_random_uuid()`),
+    /** 退货单号：SRyyyymmdd-NNNN（业务唯一） */
+    return_no: varchar("return_no", { length: 32 }).notNull().unique(),
+    order_id: varchar("order_id", { length: 36 })
+      .notNull()
+      .references(() => soSalesOrders.id),
+    /** 关联出库单（可空，按订单维度退货时为空） */
+    shipment_id: varchar("shipment_id", { length: 36 }).references(() => soShipments.id),
+    customer_id: varchar("customer_id", { length: 36 })
+      .notNull()
+      .references(() => mdCustomers.id),
+    /** 状态：draft | pending | approved(已入库) | rejected | closed */
+    status: varchar("status", { length: 20 }).notNull().default("draft"),
+    return_date: date("return_date", { mode: "string" }).notNull(),
+    reason: text("reason"),
+    /** 退货金额（红字，按销售价计） */
+    total_amount: numeric("total_amount", { precision: 14, scale: 2 }).notNull().default("0"),
+    approval_level: integer("approval_level"),
+    current_step: integer("current_step").notNull().default(0),
+    submitted_by: varchar("submitted_by", { length: 36 }),
+    submitted_at: timestamp("submitted_at", { withTimezone: true }),
+    approved_by: varchar("approved_by", { length: 36 }),
+    approved_at: timestamp("approved_at", { withTimezone: true }),
+    reject_reason: text("reject_reason"),
+    remark: text("remark"),
+    created_by: varchar("created_by", { length: 36 }).references(() => sysUsers.id),
+    created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updated_at: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index("so_returns_order_idx").on(table.order_id),
+    index("so_returns_customer_idx").on(table.customer_id),
+    index("so_returns_status_idx").on(table.status),
+    index("so_returns_created_at_idx").on(table.created_at),
+  ],
+);
+
+/** 销售退货单明细 */
+export const soReturnItems = pgTable(
+  "so_return_items",
+  {
+    id: varchar("id", { length: 36 }).primaryKey().default(sql`gen_random_uuid()`),
+    return_id: varchar("return_id", { length: 36 })
+      .notNull()
+      .references(() => soReturns.id, { onDelete: "cascade" }),
+    product_id: varchar("product_id", { length: 36 })
+      .notNull()
+      .references(() => mdProducts.id),
+    quantity: numeric("quantity", { precision: 12, scale: 3 }).notNull(),
+    unit_price: numeric("unit_price", { precision: 12, scale: 2 }).notNull(),
+    amount: numeric("amount", { precision: 14, scale: 2 }).notNull(),
+    /** 回补成本单价（创建时快照当前移动加权均价，红字冲销口径） */
+    unit_cost: numeric("unit_cost", { precision: 14, scale: 4 }),
+    unit: varchar("unit", { length: 16 }),
+    created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index("so_return_items_return_idx").on(table.return_id),
+    index("so_return_items_product_idx").on(table.product_id),
   ],
 );
 
@@ -711,3 +851,7 @@ export type PoReceipt = typeof poReceipts.$inferSelect;
 export type PoReceiptItem = typeof poReceiptItems.$inferSelect;
 export type PoReturn = typeof poReturns.$inferSelect;
 export type PoReturnItem = typeof poReturnItems.$inferSelect;
+export type SoShipment = typeof soShipments.$inferSelect;
+export type SoShipmentItem = typeof soShipmentItems.$inferSelect;
+export type SoReturn = typeof soReturns.$inferSelect;
+export type SoReturnItem = typeof soReturnItems.$inferSelect;

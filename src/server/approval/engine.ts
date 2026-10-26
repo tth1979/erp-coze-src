@@ -1,14 +1,14 @@
 /**
- * 采购审批引擎（po_*）：提交 → 分级审批 → 通过/驳回
+ * 通用单据审批引擎：提交 → 分级审批 → 通过/驳回
  *
  * 规则：po_approval_rules（doc_type + 金额区间 → level）+ po_approval_rule_steps（角色链）。
  * 实例：提交时把规则步骤快照为 po_approval_steps，逐级推进（单据 current_step 记录当前步）。
  *
  * 角色匹配：step.approver_role = 'manager' 时 manager/admin 可审；'admin' 仅 admin 可审。
  * 终态处理：
- * - requisition / order  → 审批完成直接置 approved
- * - receipt / return     → 调数据库函数 po_execute_receipt / po_execute_return
- *   （单事务完成状态流转 + 库存 + 流水，库存不足整单回滚）
+ * - requisition / order / sales_order → 审批完成直接置 approved
+ * - receipt / return / shipment / sales_return → 调数据库函数
+ *   （单事务完成状态流转 + 库存 + 流水 + 成本，库存不足整单回滚）
  */
 import { ApiError } from '@/server/http';
 import { throwInventoryRpcError } from '@/server/inventory/shared';
@@ -16,13 +16,23 @@ import { throwDbError } from '@/server/master-data/helpers';
 import { getSupabaseClient } from '@/storage/database/supabase-client';
 import type { PoApprovalRule, PoApprovalRuleStep, PoApprovalStep, SysUser } from '@/storage/database/shared/schema';
 
-export type ApprovalDocType = 'requisition' | 'order' | 'receipt' | 'return';
+export type ApprovalDocType =
+  | 'requisition'
+  | 'order'
+  | 'receipt'
+  | 'return'
+  | 'sales_order'
+  | 'shipment'
+  | 'sales_return';
 
 const DOC_TABLE: Record<ApprovalDocType, string> = {
   requisition: 'po_requisitions',
   order: 'po_purchase_orders',
   receipt: 'po_receipts',
   return: 'po_returns',
+  sales_order: 'so_sales_orders',
+  shipment: 'so_shipments',
+  sales_return: 'so_returns',
 };
 
 const DOC_NAME: Record<ApprovalDocType, string> = {
@@ -30,6 +40,17 @@ const DOC_NAME: Record<ApprovalDocType, string> = {
   order: '采购订单',
   receipt: '采购入库单',
   return: '采购退货单',
+  sales_order: '销售订单',
+  shipment: '销售出库单',
+  sales_return: '销售退货单',
+};
+
+/** 终审通过后需由数据库函数完成库存/成本流转的单据 → 函数名与参数名 */
+const EXECUTE_RPC: Partial<Record<ApprovalDocType, { fn: string; param: string }>> = {
+  receipt: { fn: 'po_execute_receipt', param: 'p_receipt_id' },
+  return: { fn: 'po_execute_return', param: 'p_return_id' },
+  shipment: { fn: 'so_execute_shipment', param: 'p_shipment_id' },
+  sales_return: { fn: 'so_execute_return', param: 'p_return_id' },
 };
 
 export interface ApprovalStepView {
@@ -204,13 +225,19 @@ export async function approveCurrentStep(
   }
 
   // 终审通过：终态流转
-  if (docType === 'receipt' || docType === 'return') {
-    // 数据库函数单事务：状态 + 库存 + 流水
-    const { error } = await supabase.rpc(docType === 'receipt' ? 'po_execute_receipt' : 'po_execute_return', {
-      ...(docType === 'receipt' ? { p_receipt_id: docId } : { p_return_id: docId }),
-      p_user_id: user.id,
-    });
-    if (error) throwInventoryRpcError(error, DOC_NAME[docType] + '审核');
+  const rpc = EXECUTE_RPC[docType];
+  if (rpc) {
+    // 数据库函数单事务：状态 + 库存 + 流水 + 成本
+    const { error } = await supabase.rpc(rpc.fn, { [rpc.param]: docId, p_user_id: user.id });
+    if (error) {
+      // RPC 失败（库存不足/超订单剩余量等）：回滚当前步骤为 pending，保证单据可修正后重新审批
+      const { error: rbErr } = await supabase
+        .from('po_approval_steps')
+        .update({ status: 'pending', approver_id: null, comment: null, acted_at: null })
+        .eq('id', step.id);
+      if (rbErr) throwDbError(rbErr, '回滚审批步骤');
+      throwInventoryRpcError(error, DOC_NAME[docType] + '审核');
+    }
     const { error: csErr } = await supabase
       .from(DOC_TABLE[docType])
       .update({ current_step: 0 })

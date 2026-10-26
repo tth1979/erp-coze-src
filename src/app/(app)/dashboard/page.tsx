@@ -86,7 +86,7 @@ export default function DashboardPage() {
           </CardContent>
         </Card>
 
-        {/* 销售订单卡片：总数 + 草稿/已确认子指标 */}
+        {/* 销售订单卡片：总数 + 待审/已审/已出库子指标 */}
         <Card>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
             <CardTitle className="text-sm font-medium text-muted-foreground">销售订单</CardTitle>
@@ -97,7 +97,7 @@ export default function DashboardPage() {
               <>
                 <p className="text-2xl font-semibold tabular-nums">{so.total}</p>
                 <p className="mt-1 text-xs text-muted-foreground tabular-nums">
-                  草稿 {so.draft} · 已确认 {so.confirmed}
+                  待审 {so.pending} · 已审 {so.approved} · 已出库 {so.shipped}
                 </p>
               </>
             ) : (
