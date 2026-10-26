@@ -50,7 +50,8 @@
 | --- | --- | --- |
 | 系统模块 | `sys_*` | 用户、凭证、会话、角色权限 |
 | 基础资料模块 | `md_*` | 客户、供应商、商品主数据 |
-| 后续业务模块（预留） | `po_*` / `so_*` / `inv_*` / `fin_*` | 采购 / 销售 / 库存 / 财务 |
+| 采购模块（已交付 MVP） | `po_*` | 采购订单 + 明细，状态机 draft→confirmed→completed / cancelled |
+| 后续业务模块（预留） | `so_*` / `inv_*` / `fin_*` | 销售 / 库存 / 财务 |
 
 > 托管 PostgREST 仅暴露 public schema，故以表名前缀实现"单库逻辑多 schema"隔离。
 
@@ -77,8 +78,20 @@
 | GET/PUT/DELETE | /api/md/suppliers/[id] | 同上 | 供应商 |
 | GET/POST | /api/md/products | 同上 | 商品主数据（型号/规格/单位/条形码） |
 | GET/PUT/DELETE | /api/md/products/[id] | 同上 | 商品 |
+| GET/POST | /api/po/orders | po.read / po.write | 采购订单分页列表（支持 status 筛选）/ 新建（草稿） |
+| GET/PUT/DELETE | /api/po/orders/[id] | po.read / po.write | 订单详情（含明细）/ 更新 / 删除（仅 draft） |
+| POST | /api/po/orders/[id]/confirm | po.write | 确认订单（draft→confirmed） |
+| POST | /api/po/orders/[id]/cancel | po.write | 取消订单（draft/confirmed→cancelled） |
 
-分页参数：`page`(≥1) `pageSize`(1-100) `keyword`（模糊搜索）；响应 `{ items, total, page, pageSize }`。
+分页参数：`page`(≥1) `pageSize`(1-100) `keyword`（模糊搜索）；响应 `{ items, total, page, page_size }`。
+
+### 采购模块约定（po_*）
+
+- **表**：`po_purchase_orders`（单头：order_no 唯一、supplier_id FK、status、order_date、total_amount、created_by）+ `po_purchase_order_items`（明细：order_id FK cascade、product_id FK、quantity/unit_price/amount、unit 快照）。
+- **单号**：`POyyyymmdd-NNNN`，按当日数量+1 生成，唯一约束冲突（23505）重试一次。
+- **金额**：一律服务端按明细 `quantity × unit_price` 计算行金额与总额，不信任客户端传值。
+- **状态机**：仅 `draft` 可编辑/删除；`confirmed` 不可再改明细；`completed` 待库存里程碑接入到货后流转。
+- **补偿式写入**：Supabase SDK 无多语句事务，"单头+明细"写入采用补偿模式（明细插入失败则删除单头），见 `src/server/purchase/orders.ts` 头注释；后续可迁移存储过程。
 
 ### 数据库工作流（强制）
 
@@ -95,21 +108,29 @@
 src/
 ├── server/                  # 服务端业务逻辑（仅服务端可 import）
 │   ├── http.ts              # ApiError + 统一错误处理
-│   ├── auth/                # password(scrypt)/session/permissions/guard
-│   └── master-data/         # 三个模块的查询/校验/序列化
+│   ├── auth/                # password(scrypt)/session/permissions/guard/bootstrap
+│   ├── master-data/         # 客户/供应商/商品的查询/校验/序列化 + helpers(分页/模糊搜索)
+│   └── purchase/            # 采购订单服务（单号生成/金额核算/状态流转）
 ├── app/api/                 # Route Handlers（薄层，调 server 服务）
 ├── app/(app)/               # 登录后区域（路由组，layout 内做守卫）
 │   ├── dashboard/           # 仪表盘
-│   └── master-data/         # customers / suppliers / products 页面
+│   ├── master-data/         # customers / suppliers / products 页面
+│   └── purchase/orders/     # 采购订单列表 / new / [id] 详情（详情页内切换编辑态）
 ├── components/
 │   ├── auth/auth-provider.tsx   # 会话 Context（useAuth().can()）
-│   ├── layout/app-shell.tsx     # 侧边栏 + 顶栏
-│   └── master-data/             # 表单对话框 / 分页 / 状态徽章 / 删除确认
-├── lib/                     # api-client / types / use-paged-list
+│   ├── layout/app-shell.tsx     # 侧边栏 + 顶栏（移动端抽屉导航）
+│   ├── master-data/             # 表单对话框 / 分页 / 状态徽章 / 删除确认
+│   └── purchase/                # 订单编辑器(明细行) / 状态徽章 / 动作确认弹窗
+├── lib/                     # api-client / types / use-paged-list(支持 filters)
 └── storage/database/        # supabase-client.ts + shared/schema.ts
-db/migrations/               # 版本化 SQL（与 schema.ts 保持一致）
+db/migrations/               # 版本化 SQL（0001 基础+认证 / 0002 采购）
 scripts/seed-dev.ts          # DEV 测试账号种子
 ```
+
+### 冒烟测试注意事项
+
+- `test_run` 命令并行执行且跨命令共享状态不可靠：每条命令必须自包含（自带 login、独立 cookie jar）；负向断言用 `CODE=$(curl -w '%{http_code}' ...)` + `test` 收口。
+- curl 直接发**未百分号编码的非 ASCII query**（如 `?keyword=冒烟`）会被 Node HTTP 层以 400 空响应拒绝（非业务错误）；冒烟用 ASCII 关键字（如单号），中文模糊搜索由浏览器自动编码，不影响前端使用。
 
 ## 包管理规范
 

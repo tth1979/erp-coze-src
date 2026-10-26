@@ -9,6 +9,7 @@ import {
   LogOut,
   Menu,
   Package,
+  ShoppingCart,
   Truck,
   Users,
   X,
@@ -49,6 +50,12 @@ const NAV: NavGroup[] = [
       { title: '客户档案', href: '/master-data/customers', icon: Users, permission: 'md.read' },
       { title: '供应商', href: '/master-data/suppliers', icon: Truck, permission: 'md.read' },
       { title: '商品主数据', href: '/master-data/products', icon: Package, permission: 'md.read' },
+    ],
+  },
+  {
+    group: '采购管理',
+    items: [
+      { title: '采购订单', href: '/purchase/orders', icon: ShoppingCart, permission: 'po.read' },
     ],
   },
 ];

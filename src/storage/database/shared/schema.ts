@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import {
+  date,
   index,
   integer,
   jsonb,
@@ -190,6 +191,69 @@ export const mdProducts = pgTable(
 );
 
 // ============================================================
+// po_ 采购模块：采购订单（单据头 + 明细行）
+// 库存联动（到货入库）留待 inv_ 库存里程碑，状态机已预留 completed
+// ============================================================
+
+/** 采购订单（单据头） */
+export const poPurchaseOrders = pgTable(
+  "po_purchase_orders",
+  {
+    id: varchar("id", { length: 36 }).primaryKey().default(sql`gen_random_uuid()`),
+    /** 采购单号：POyyyymmdd-NNNN（业务唯一） */
+    order_no: varchar("order_no", { length: 32 }).notNull().unique(),
+    supplier_id: varchar("supplier_id", { length: 36 })
+      .notNull()
+      .references(() => mdSuppliers.id),
+    /** 状态：draft(草稿) | confirmed(已确认) | completed(已完成) | cancelled(已取消) */
+    status: varchar("status", { length: 20 }).notNull().default("draft"),
+    /** 下单日期（YYYY-MM-DD） */
+    order_date: date("order_date", { mode: "string" }).notNull(),
+    /** 订单总额（由明细行服务端计算） */
+    total_amount: numeric("total_amount", { precision: 14, scale: 2 }).notNull().default("0"),
+    remark: text("remark"),
+    created_by: varchar("created_by", { length: 36 }).references(() => sysUsers.id),
+    confirmed_at: timestamp("confirmed_at", { withTimezone: true }),
+    cancelled_at: timestamp("cancelled_at", { withTimezone: true }),
+    created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updated_at: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index("po_orders_supplier_idx").on(table.supplier_id),
+    index("po_orders_status_idx").on(table.status),
+    index("po_orders_order_date_idx").on(table.order_date),
+    index("po_orders_created_at_idx").on(table.created_at),
+  ],
+);
+
+/** 采购订单明细行（随订单级联删除） */
+export const poPurchaseOrderItems = pgTable(
+  "po_purchase_order_items",
+  {
+    id: varchar("id", { length: 36 }).primaryKey().default(sql`gen_random_uuid()`),
+    order_id: varchar("order_id", { length: 36 })
+      .notNull()
+      .references(() => poPurchaseOrders.id, { onDelete: "cascade" }),
+    product_id: varchar("product_id", { length: 36 })
+      .notNull()
+      .references(() => mdProducts.id),
+    /** 数量（支持小数，如按 ㎡ 采购） */
+    quantity: numeric("quantity", { precision: 12, scale: 3 }).notNull(),
+    /** 采购单价 */
+    unit_price: numeric("unit_price", { precision: 12, scale: 2 }).notNull(),
+    /** 行金额 = quantity * unit_price（服务端计算） */
+    amount: numeric("amount", { precision: 14, scale: 2 }).notNull(),
+    /** 单位快照（商品单位后续变更不影响历史单据） */
+    unit: varchar("unit", { length: 16 }),
+    created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index("po_items_order_idx").on(table.order_id),
+    index("po_items_product_idx").on(table.product_id),
+  ],
+);
+
+// ============================================================
 // 类型导出
 // ============================================================
 export type SysUser = typeof sysUsers.$inferSelect;
@@ -198,3 +262,5 @@ export type SysSession = typeof sysSessions.$inferSelect;
 export type MdCustomer = typeof mdCustomers.$inferSelect;
 export type MdSupplier = typeof mdSuppliers.$inferSelect;
 export type MdProduct = typeof mdProducts.$inferSelect;
+export type PoPurchaseOrder = typeof poPurchaseOrders.$inferSelect;
+export type PoPurchaseOrderItem = typeof poPurchaseOrderItems.$inferSelect;

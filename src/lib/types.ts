@@ -71,4 +71,44 @@ export interface OverviewStats {
   customers: number;
   suppliers: number;
   products: number;
+  purchase_orders?: {
+    total: number;
+    draft: number;
+    confirmed: number;
+  };
+}
+
+// ---------------------------------------------------------------------------
+// 采购模块
+// ---------------------------------------------------------------------------
+
+export interface PurchaseOrderItem {
+  id: string;
+  product_id: string;
+  product_name: string | null;
+  product_sku: string | null;
+  product_spec: string | null;
+  quantity: number;
+  unit_price: number;
+  amount: number;
+  unit: string | null;
+}
+
+export interface PurchaseOrder {
+  id: string;
+  order_no: string;
+  supplier_id: string;
+  supplier_name: string | null;
+  /** draft | confirmed | completed | cancelled */
+  status: string;
+  order_date: string;
+  total_amount: number;
+  item_count: number;
+  remark: string | null;
+  created_by_name: string | null;
+  confirmed_at: string | null;
+  cancelled_at: string | null;
+  created_at: string;
+  updated_at: string;
+  items?: PurchaseOrderItem[];
 }
