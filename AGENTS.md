@@ -1,12 +1,16 @@
 # 项目上下文
 
+**瓷砖经销商 ERP 管理后台**（模块化单体）。首期交付：登录认证 + 角色权限雏形 + 基础资料（客户/供应商/商品主数据）CRUD。后续里程碑：采购 → 销售 → 库存 → 财务 → 加工 → 税务。
+
 ### 版本技术栈
 
-- **Framework**: Next.js 16 (App Router)
+- **Framework**: Next.js 16 (App Router) —— 前后端一体（React 19 前端 + Route Handlers 后端）
 - **Core**: React 19
 - **Language**: TypeScript 5
 - **UI 组件**: shadcn/ui (基于 Radix UI)
 - **Styling**: Tailwind CSS 4
+- **数据库**: 托管 PostgreSQL（Supabase），SDK CRUD + Drizzle 管 schema
+- **认证**: 自建会话（sys_sessions opaque token + httpOnly Cookie，scrypt 口令哈希）
 
 ## 目录结构
 
@@ -30,6 +34,75 @@
 ```
 
 - 项目文件（如 app 目录、pages 目录、components 等）默认初始化到 `src/` 目录下。
+
+## 业务架构（模块化单体）
+
+### 模块边界与命名前缀
+
+| 模块 | 表前缀 | 职责 |
+| --- | --- | --- |
+| 系统模块 | `sys_*` | 用户、凭证、会话、角色权限 |
+| 基础资料模块 | `md_*` | 客户、供应商、商品主数据 |
+| 后续业务模块（预留） | `po_*` / `so_*` / `inv_*` / `fin_*` | 采购 / 销售 / 库存 / 财务 |
+
+> 托管 PostgREST 仅暴露 public schema，故以表名前缀实现"单库逻辑多 schema"隔离。
+
+### 认证与权限（T2 雏形）
+
+- **数据模型**：`sys_users`（用户主体+role 枚举）/ `sys_user_credentials`（凭证抽象，新增登录方式=新增 type）/ `sys_sessions`（会话）。
+- **登录**：POST `/api/auth/login` `{type:'password', payload:{username,password}}` → httpOnly Cookie `erp_session`。
+- **权限模型**：角色 → 权限点映射在 `src/server/auth/permissions.ts`（admin=`*`，manager=读写，staff=只读）。
+  API 层用 `requireAuth(request)` / `requirePermission(auth, 'md.write')` 做守卫；前端 `useAuth().can()` 控制菜单/按钮显隐。
+- **升级路径**：T3 完整 RBAC（roles/permissions/role_permissions/user_roles 四表）为单向加表升级，见 `src/server/auth/permissions.ts` 注释。
+- **DEV 测试账号**：`pnpm tsx scripts/seed-dev.ts`（仅 DEV 可执行，密码运行时随机生成、只打印控制台）。
+
+### API 清单（错误格式 `{ code, message }`）
+
+| 方法 | 路径 | 权限 | 说明 |
+| --- | --- | --- | --- |
+| POST | /api/auth/login | 公开 | 登录（含限流 5次/10min） |
+| POST | /api/auth/logout | 已登录 | 登出 |
+| GET | /api/account/me | 已登录 | 当前用户 + 权限点 |
+| GET | /api/stats/overview | 已登录 | 仪表盘统计 |
+| GET/POST | /api/md/customers | md.read / md.write | 客户分页列表 / 新增 |
+| GET/PUT/DELETE | /api/md/customers/[id] | md.read / md.write | 客户详情 / 更新 / 删除 |
+| GET/POST | /api/md/suppliers | 同上 | 供应商 |
+| GET/PUT/DELETE | /api/md/suppliers/[id] | 同上 | 供应商 |
+| GET/POST | /api/md/products | 同上 | 商品主数据（型号/规格/单位/条形码） |
+| GET/PUT/DELETE | /api/md/products/[id] | 同上 | 商品 |
+
+分页参数：`page`(≥1) `pageSize`(1-100) `keyword`（模糊搜索）；响应 `{ items, total, page, pageSize }`。
+
+### 数据库工作流（强制）
+
+1. `coze-coding-ai db generate-models`（首次）
+2. 编辑 `src/storage/database/shared/schema.ts`（**唯一权威来源**）
+3. `coze-coding-ai db upgrade`
+4. 新表必须启用 RLS（exec_sql: `ALTER TABLE xxx ENABLE ROW LEVEL SECURITY;`，不自建 Auth 的场景不建 policy）
+5. 同步更新 `db/migrations/*.sql` 版本化记录（独立部署时使用）
+6. 约束：`src/storage/database/` 下除 supabase-client.ts 外不新增文件；CRUD 一律走 Supabase SDK（`getSupabaseClient()`），禁手写 SQL/原生驱动/直连连接串。
+
+### 关键目录
+
+```
+src/
+├── server/                  # 服务端业务逻辑（仅服务端可 import）
+│   ├── http.ts              # ApiError + 统一错误处理
+│   ├── auth/                # password(scrypt)/session/permissions/guard
+│   └── master-data/         # 三个模块的查询/校验/序列化
+├── app/api/                 # Route Handlers（薄层，调 server 服务）
+├── app/(app)/               # 登录后区域（路由组，layout 内做守卫）
+│   ├── dashboard/           # 仪表盘
+│   └── master-data/         # customers / suppliers / products 页面
+├── components/
+│   ├── auth/auth-provider.tsx   # 会话 Context（useAuth().can()）
+│   ├── layout/app-shell.tsx     # 侧边栏 + 顶栏
+│   └── master-data/             # 表单对话框 / 分页 / 状态徽章 / 删除确认
+├── lib/                     # api-client / types / use-paged-list
+└── storage/database/        # supabase-client.ts + shared/schema.ts
+db/migrations/               # 版本化 SQL（与 schema.ts 保持一致）
+scripts/seed-dev.ts          # DEV 测试账号种子
+```
 
 ## 包管理规范
 
