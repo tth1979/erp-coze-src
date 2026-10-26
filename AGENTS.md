@@ -12,6 +12,12 @@
 - **数据库**: 托管 PostgreSQL（Supabase），SDK CRUD + Drizzle 管 schema
 - **认证**: 自建会话（sys_sessions opaque token + httpOnly Cookie，scrypt 口令哈希）
 
+### 环境差异（重要）
+
+- **开发库（develop）与生产库（product）相互独立**：`exec_sql`/`coze-coding-ai db` 操作默认只影响开发库；生产部署站点（`*.coze.site`，非 `*.dev.coze.site`）使用生产库。种子脚本、手动改密码等数据操作**不会自动同步到生产库**。
+- 生产库无法直接写入（exec_sql product 只读），生产数据初始化只能通过应用运行时代码完成。
+- **首启自举**：`src/server/auth/bootstrap.ts` 在登录接口入口幂等执行——当 `admin123`（可用 `ERP_BOOTSTRAP_USER`/`ERP_BOOTSTRAP_PASSWORD` 覆盖）凭证不存在时自动创建初始管理员，并清理 DEV 种子凭证；绝不覆盖已有口令。生产部署后首次登录即自动建好账号。
+
 ## 目录结构
 
 ```

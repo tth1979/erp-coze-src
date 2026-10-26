@@ -4,6 +4,7 @@ import { getSupabaseClient } from '@/storage/database/supabase-client';
 import type { SysUser } from '@/storage/database/shared/schema';
 import { issueSession, SESSION_COOKIE } from '@/server/auth/session';
 import { verifyPassword } from '@/server/auth/password';
+import { ensureBootstrapAdmin } from '@/server/auth/bootstrap';
 import { listPermissions } from '@/server/auth/permissions';
 import { fail, handleError, ok } from '@/server/http';
 
@@ -48,6 +49,9 @@ export async function POST(request: NextRequest) {
   try {
     const body = loginSchema.parse(await request.json());
     const { username, password } = body.payload;
+
+    // 幂等自举：生产库首启时确保初始管理员存在（仅创建一次，不覆盖已有口令）
+    await ensureBootstrapAdmin();
 
     // 门控铁律：非 DEV 环境拒绝测试账号登录
     if (!isDev && username.endsWith('@coze.dev')) {
