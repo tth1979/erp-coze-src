@@ -71,7 +71,75 @@ export default function SuppliersPage() {
         </Button>
       </form>
 
-      <div className="rounded-lg border bg-card">
+      {/* 移动端：购物车式卡片清单 */}
+      <div className="space-y-2.5 lg:hidden">
+        {list.loading ? (
+          Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-24 w-full rounded-lg" />)
+        ) : list.items.length === 0 ? (
+          <div className="rounded-lg border bg-card py-10 text-center text-sm text-muted-foreground">
+            暂无供应商数据
+          </div>
+        ) : (
+          list.items.map((s) => (
+            <div key={s.id} className="rounded-lg border border-stone-200 bg-white p-3.5 shadow-sm">
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono text-xs text-stone-500">{s.code}</span>
+                    <StatusBadge status={s.status} />
+                  </div>
+                  <div className="mt-1 truncate text-sm font-medium text-stone-900">{s.name}</div>
+                </div>
+                {writable && (
+                  <div className="flex shrink-0 gap-1">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8"
+                      aria-label="编辑"
+                      onClick={() => {
+                        setEditing(s);
+                        setFormOpen(true);
+                      }}
+                    >
+                      <Pencil className="h-4 w-4" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8"
+                      aria-label="删除"
+                      onClick={() => setDeleteTarget(s)}
+                    >
+                      <Trash2 className="h-4 w-4 text-destructive" />
+                    </Button>
+                  </div>
+                )}
+              </div>
+              <div className="mt-2.5 grid grid-cols-2 gap-x-3 gap-y-1.5 text-xs">
+                <div>
+                  <span className="text-stone-500">联系人：</span>
+                  <span className="text-stone-800">{s.contact ?? '-'}</span>
+                </div>
+                <div>
+                  <span className="text-stone-500">电话：</span>
+                  <span className="text-stone-800">{s.phone ?? '-'}</span>
+                </div>
+                <div className="col-span-2">
+                  <span className="text-stone-500">结算方式：</span>
+                  <span className="text-stone-800">{s.settlement ?? '-'}</span>
+                </div>
+              </div>
+            </div>
+          ))
+        )}
+        <div className="rounded-lg border bg-card px-3">
+          <PaginationControls page={list.page} pageSize={list.pageSize} total={list.total} onPageChange={list.setPage} />
+        </div>
+      </div>
+
+      {/* 桌面端：高密度表格 */}
+      <div className="hidden rounded-lg border bg-card lg:block">
         <Table className="min-w-[680px]">
           <TableHeader>
             <TableRow>
