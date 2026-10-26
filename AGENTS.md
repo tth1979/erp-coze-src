@@ -17,6 +17,7 @@
 - **开发库（develop）与生产库（product）相互独立**：`exec_sql`/`coze-coding-ai db` 操作默认只影响开发库；生产部署站点（`*.coze.site`，非 `*.dev.coze.site`）使用生产库。种子脚本、手动改密码等数据操作**不会自动同步到生产库**。
 - 生产库无法直接写入（exec_sql product 只读），生产数据初始化只能通过应用运行时代码完成。
 - **首启自举**：`src/server/auth/bootstrap.ts` 在登录接口入口幂等执行——当 `admin123`（可用 `ERP_BOOTSTRAP_USER`/`ERP_BOOTSTRAP_PASSWORD` 覆盖）凭证不存在时自动创建初始管理员，并清理 DEV 种子凭证；绝不覆盖已有口令。生产部署后首次登录即自动建好账号。
+- **预览约定**：开发反馈统一走开发预览地址（`*.dev.coze.site`，主仓端口 5000，常驻运行、代码改动热更新即时生效）；生产站点（`*.coze.site`）仅在里程碑验收时部署使用。
 
 ## 目录结构
 
