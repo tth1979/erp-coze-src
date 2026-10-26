@@ -13,7 +13,7 @@ interface PaginationControlsProps {
 export function PaginationControls({ page, pageSize, total, onPageChange }: PaginationControlsProps) {
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   return (
-    <div className="flex items-center justify-between px-1 py-3 text-sm text-muted-foreground">
+    <div className="flex items-center justify-between gap-2 px-1 py-3 text-xs text-muted-foreground sm:text-sm">
       <span className="tabular-nums">
         共 {total} 条 · 第 {page}/{totalPages} 页
       </span>
@@ -25,7 +25,8 @@ export function PaginationControls({ page, pageSize, total, onPageChange }: Pagi
           onClick={() => onPageChange(page - 1)}
         >
           <ChevronLeft className="h-4 w-4" />
-          上一页
+          <span className="hidden sm:inline">上一页</span>
+          <span className="sm:hidden">上页</span>
         </Button>
         <Button
           variant="outline"
@@ -33,7 +34,8 @@ export function PaginationControls({ page, pageSize, total, onPageChange }: Pagi
           disabled={page >= totalPages}
           onClick={() => onPageChange(page + 1)}
         >
-          下一页
+          <span className="hidden sm:inline">下一页</span>
+          <span className="sm:hidden">下页</span>
           <ChevronRight className="h-4 w-4" />
         </Button>
       </div>

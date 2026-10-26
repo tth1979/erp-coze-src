@@ -32,20 +32,22 @@ export default function ProductsPage() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="min-w-0">
           <h1 className="text-lg font-semibold">商品主数据</h1>
           <p className="text-sm text-muted-foreground">瓷砖 SKU 主数据：型号 / 规格 / 单位 / 条形码</p>
         </div>
         {writable && (
           <Button
+            className="shrink-0"
             onClick={() => {
               setEditing(null);
               setFormOpen(true);
             }}
           >
             <Plus className="h-4 w-4" />
-            新增商品
+            <span className="hidden sm:inline">新增商品</span>
+            <span className="sm:hidden">新增</span>
           </Button>
         )}
       </div>
@@ -58,19 +60,19 @@ export default function ProductsPage() {
         }}
       >
         <Input
-          className="max-w-xs"
+          className="w-full sm:max-w-xs"
           placeholder="搜索编码 / 名称 / 型号 / 规格 / 条形码"
           value={keywordInput}
           onChange={(e) => setKeywordInput(e.target.value)}
         />
-        <Button type="submit" variant="outline">
+        <Button type="submit" variant="outline" className="shrink-0 px-2 sm:px-4" aria-label="搜索">
           <Search className="h-4 w-4" />
-          搜索
+          <span className="hidden sm:inline">搜索</span>
         </Button>
       </form>
 
       <div className="rounded-lg border bg-card">
-        <Table>
+        <Table className="min-w-[860px]">
           <TableHeader>
             <TableRow>
               <TableHead className="w-28">商品编码</TableHead>

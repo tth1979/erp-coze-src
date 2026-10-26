@@ -32,20 +32,22 @@ export default function SuppliersPage() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="min-w-0">
           <h1 className="text-lg font-semibold">供应商</h1>
           <p className="text-sm text-muted-foreground">维护瓷砖厂家与供货商的主数据</p>
         </div>
         {writable && (
           <Button
+            className="shrink-0"
             onClick={() => {
               setEditing(null);
               setFormOpen(true);
             }}
           >
             <Plus className="h-4 w-4" />
-            新增供应商
+            <span className="hidden sm:inline">新增供应商</span>
+            <span className="sm:hidden">新增</span>
           </Button>
         )}
       </div>
@@ -58,19 +60,19 @@ export default function SuppliersPage() {
         }}
       >
         <Input
-          className="max-w-xs"
+          className="w-full sm:max-w-xs"
           placeholder="搜索编码 / 名称 / 联系人 / 电话"
           value={keywordInput}
           onChange={(e) => setKeywordInput(e.target.value)}
         />
-        <Button type="submit" variant="outline">
+        <Button type="submit" variant="outline" className="shrink-0 px-2 sm:px-4" aria-label="搜索">
           <Search className="h-4 w-4" />
-          搜索
+          <span className="hidden sm:inline">搜索</span>
         </Button>
       </form>
 
       <div className="rounded-lg border bg-card">
-        <Table>
+        <Table className="min-w-[680px]">
           <TableHeader>
             <TableRow>
               <TableHead className="w-28">编码</TableHead>
