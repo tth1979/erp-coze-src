@@ -19,7 +19,7 @@ interface SeedAccount {
 }
 
 const ACCOUNTS: SeedAccount[] = [
-  { username: 'dev_admin@coze.dev', displayName: '开发管理员', role: 'admin' },
+  { username: 'ADMIN', displayName: '系统管理员', role: 'admin' },
   { username: 'dev_user@coze.dev', displayName: '开发业务员', role: 'staff' },
 ];
 
