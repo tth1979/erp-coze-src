@@ -26,22 +26,7 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { MoEditorDialog } from '@/components/processing/mo-editor-dialog';
-
-const TYPE_LABELS: Record<string, string> = {
-  cut: '切割',
-  slot: '开槽',
-  edge: '磨边',
-  combine: '组合拼贴',
-};
-
-export const STATUS_LABELS: Record<string, string> = {
-  draft: '草稿',
-  pending: '待审',
-  approved: '已审',
-  completed: '完成',
-  rejected: '已驳回',
-  closed: '已关闭',
-};
+import { MA_STATUS_LABELS, MA_TYPE_LABELS } from '@/lib/ma-labels';
 
 function money(v: number): string {
   return `¥${(v ?? 0).toLocaleString('zh-CN', { minimumFractionDigits: 2 })}`;
@@ -106,7 +91,7 @@ export default function ManufacturingOrdersPage() {
             <SelectValue placeholder="加工类型" />
           </SelectTrigger>
           <SelectContent>
-            {(types.length ? types : Object.keys(TYPE_LABELS).map((k) => ({ code: k, label: TYPE_LABELS[k] }))).map(
+            {(types.length ? types : Object.keys(MA_TYPE_LABELS).map((k) => ({ code: k, label: MA_TYPE_LABELS[k] }))).map(
               (t) => (
                 <SelectItem key={t.code} value={t.code}>
                   {t.label}
@@ -120,7 +105,7 @@ export default function ManufacturingOrdersPage() {
             <SelectValue placeholder="状态" />
           </SelectTrigger>
           <SelectContent>
-            {Object.entries(STATUS_LABELS).map(([k, v]) => (
+            {Object.entries(MA_STATUS_LABELS).map(([k, v]) => (
               <SelectItem key={k} value={k}>
                 {v}
               </SelectItem>
@@ -156,9 +141,9 @@ export default function ManufacturingOrdersPage() {
               rows.map((r) => (
                 <TableRow key={r.id}>
                   <TableCell className="font-mono text-sm">{r.doc_no}</TableCell>
-                  <TableCell>{TYPE_LABELS[r.processing_type] ?? r.processing_type}</TableCell>
+                  <TableCell>{MA_TYPE_LABELS[r.processing_type] ?? r.processing_type}</TableCell>
                   <TableCell>{((r.loss_ratio ?? 0) * 100).toFixed(0)}%</TableCell>
-                  <TableCell>{STATUS_LABELS[r.status] ?? r.status}</TableCell>
+                  <TableCell>{MA_STATUS_LABELS[r.status] ?? r.status}</TableCell>
                   <TableCell>{money(r.estimate_cost)}</TableCell>
                   <TableCell>{money(r.issued_cost ?? 0)}</TableCell>
                   <TableCell>
@@ -204,7 +189,7 @@ export default function ManufacturingOrdersPage() {
       <MoEditorDialog
         open={editorOpen}
         onOpenChange={setEditorOpen}
-        processingTypes={types.length ? types : Object.keys(TYPE_LABELS).map((k) => ({ code: k, label: TYPE_LABELS[k] }))}
+        processingTypes={types.length ? types : Object.keys(MA_TYPE_LABELS).map((k) => ({ code: k, label: MA_TYPE_LABELS[k] }))}
         onSaved={reload}
       />
     </div>

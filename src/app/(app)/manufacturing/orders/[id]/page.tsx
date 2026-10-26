@@ -30,7 +30,7 @@ import {
 import { ApprovalPanel } from '@/components/purchase/approval-panel';
 import { DeleteConfirmDialog } from '@/components/master-data/delete-confirm-dialog';
 import { MoEditorDialog } from '@/components/processing/mo-editor-dialog';
-import { STATUS_LABELS } from '../page';
+import { MA_STATUS_LABELS } from '@/lib/ma-labels';
 
 const TYPE_LABELS: Record<string, string> = {
   cut: '切割',
@@ -168,7 +168,7 @@ export default function ManufacturingOrderDetailPage() {
         </Button>
         <h1 className="text-xl font-semibold font-mono">{order.doc_no}</h1>
         <span className="rounded-full bg-muted px-2 py-0.5 text-xs">
-          {STATUS_LABELS[order.status] ?? order.status}
+          {MA_STATUS_LABELS[order.status] ?? order.status}
         </span>
       </div>
 

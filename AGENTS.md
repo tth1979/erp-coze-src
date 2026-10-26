@@ -201,6 +201,18 @@
 - `.or()` 过滤器**不支持嵌入表列名前缀**（`or=(product.name.ilike.*,...*)` 或带表别名均报 `failed to parse logic tree`）。需要按嵌入商品名/编码模糊搜索时，先在主数据查出匹配 `md_products.id` 列表，再对库存/流水用 `.in('product_id', ids)`（无匹配则直接返回空页）。见 `src/server/inventory/stock.ts` 的 `matchProductIds`。
 - 嵌入关联依赖真实外键约束；`created_by` 等 FK 若 db upgrade 未生成，需 exec_sql 补建并在迁移文件加幂等 DO 块。补全操作人姓名采用两步查询（批量取 sys_users 的 username/display_name 再 map），不依赖嵌入。
 
+### PDA / 移动端（周边弱耦合，/m/ 前缀）
+
+- **定位**：仓库作业手持端简化入口，**不新建表、不新增核心 API**，纯前端装配复用既有 `inv_*` 能力；与桌面端数据/权限同源。
+- **路由**：移动端独立布局 `src/app/m/layout.tsx`（`/m/` 段路由守卫 + 底部大按钮导航），与桌面 `(app)` 并存，不进 AppShell。
+- **页面**（`src/app/m/pda/*`，均为 'use client'）：
+  - `/m/pda` 首页：三张便携卡片跳转。
+  - `/m/pda/scan-count` 扫码盘点录入：选仓 → `POST /api/inv/checks` 建盘点单(IC)快照账面 → 扫条码定位行/录实盘 → `PUT /api/inv/checks/[id]` 保存 → `POST submit/approve` 提交并审核过账；可续盘进行中的 draft/pending 单。写操作需 `inv.write`、审批需 `inv.approve`。
+  - `/m/pda/inventory` 口袋版查余额：`GET /api/inv/stock?keyword=` 快速查余额/可用/冻结（跨仓）。
+  - `/m/pda/movements` 出入库核对（只读）：`GET /api/inv/movements?keyword=` 扫条码/单号查最近收发货台账流水（含 source 类型、单号、成本快照）。
+- **权限**：读 `inv.read`（含 staff）、写 `inv.write` / 审批 `inv.approve`（admin+manager）；与桌面端一致，无独立权限点。
+- **约束**：`/m/` 页面不做服务端数据写入型新端点，创建盘点/出入库全部走既有 API。页面组件内定义轻量本地类型，不写入 `src/lib/types.ts`（保持弱耦合）。
+
 ### 财务模块约定（fin_*）
 
 - **表**：单表 `fin_payments` 承载收付款单——`doc_no` 唯一（收款 `RCyyyymmdd-NNNN`、付款 `PYyyyymmdd-NNNN`）、`direction`(receipt/payment)、`customer_id`/`supplier_id` 二选一 FK（方向决定哪个非空）、`order_id`+`order_no` 冗余快照（关联订单可空，不建 FK，因方向不同指向 so/po 两张表；**收款单关联销售订单即应收单、付款单关联采购订单即应付单，供核销明细可溯**）、`amount numeric(14,2)`、`method`(cash/bank/wechat/alipay/other)、`paid_at`、`bill_no`（对账单号，可选）、`created_by` FK、核销状态列 `status`(pending待核销/approved已核销/cancelled作废，默认 approved 兼容旧数据)、`approved_by/approved_at`、`cancelled_by/cancelled_at`、`bill_no`/`status` 索引(`fin_payments_bill_no_idx`/`fin_payments_status_idx`)。
