@@ -317,6 +317,57 @@ export const soSalesOrderItems = pgTable(
 );
 
 // ============================================================
+// 库存模块（inv_*）
+// 余额表（每个商品一行）+ 流水台账；出入库强一致由数据库函数保证
+// ============================================================
+
+/** 库存余额（单仓库模型，每个商品一行） */
+export const invStock = pgTable(
+  "inv_stock",
+  {
+    id: varchar("id", { length: 36 }).primaryKey().default(sql`gen_random_uuid()`),
+    product_id: varchar("product_id", { length: 36 })
+      .notNull()
+      .unique()
+      .references(() => mdProducts.id),
+    /** 当前库存数量 */
+    quantity: numeric("quantity", { precision: 14, scale: 3 }).notNull().default("0"),
+    created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updated_at: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [index("inv_stock_quantity_idx").on(table.quantity)],
+);
+
+/** 库存流水（台账，只追加不改写） */
+export const invStockMovements = pgTable(
+  "inv_stock_movements",
+  {
+    id: varchar("id", { length: 36 }).primaryKey().default(sql`gen_random_uuid()`),
+    product_id: varchar("product_id", { length: 36 })
+      .notNull()
+      .references(() => mdProducts.id),
+    /** 类型：in(入库) | out(出库) | adjust(盘盈/盘亏) */
+    type: varchar("type", { length: 16 }).notNull(),
+    /** 本次变动数量（in/adjust盘盈为正，out/adjust盘亏为负） */
+    quantity: numeric("quantity", { precision: 14, scale: 3 }).notNull(),
+    /** 变动后余额（冗余快照，便于台账直接对账） */
+    balance: numeric("balance", { precision: 14, scale: 3 }).notNull(),
+    /** 来源：purchase_in / sales_out / manual */
+    source: varchar("source", { length: 32 }).notNull().default("manual"),
+    /** 关联单号（如 PO/SO 单号），手工出入库可空 */
+    ref_no: varchar("ref_no", { length: 32 }),
+    remark: text("remark"),
+    created_by: varchar("created_by", { length: 36 }).references(() => sysUsers.id),
+    created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index("inv_mov_product_idx").on(table.product_id),
+    index("inv_mov_created_at_idx").on(table.created_at),
+    index("inv_mov_type_idx").on(table.type),
+  ],
+);
+
+// ============================================================
 // 类型导出
 // ============================================================
 export type SysUser = typeof sysUsers.$inferSelect;
@@ -329,3 +380,5 @@ export type PoPurchaseOrder = typeof poPurchaseOrders.$inferSelect;
 export type PoPurchaseOrderItem = typeof poPurchaseOrderItems.$inferSelect;
 export type SoSalesOrder = typeof soSalesOrders.$inferSelect;
 export type SoSalesOrderItem = typeof soSalesOrderItems.$inferSelect;
+export type InvStock = typeof invStock.$inferSelect;
+export type InvStockMovement = typeof invStockMovements.$inferSelect;

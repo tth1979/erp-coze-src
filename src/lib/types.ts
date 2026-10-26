@@ -81,6 +81,10 @@ export interface OverviewStats {
     draft: number;
     confirmed: number;
   };
+  inventory?: {
+    tracked_kinds: number;
+    out_of_stock: number;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -159,3 +163,35 @@ export interface SalesOrder {
 
 export type TradeOrder = PurchaseOrder | SalesOrder;
 export type TradeOrderItem = PurchaseOrderItem | SalesOrderItem;
+
+// ---------------------------------------------------------------------------
+// 库存模块
+// ---------------------------------------------------------------------------
+
+export interface StockItem {
+  product_id: string;
+  product_name: string;
+  sku_code: string | null;
+  spec: string | null;
+  unit: string | null;
+  quantity: number;
+  updated_at: string;
+}
+
+/** in 入库 | out 出库 | adjust 盘盈/盘亏 */
+export interface StockMovement {
+  id: string;
+  product_id: string;
+  product_name: string;
+  sku_code: string | null;
+  unit: string | null;
+  type: string;
+  quantity: number;
+  balance: number;
+  /** purchase_in | sales_out | manual */
+  source: string;
+  ref_no: string | null;
+  remark: string | null;
+  created_by_name: string | null;
+  created_at: string;
+}

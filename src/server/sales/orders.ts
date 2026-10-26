@@ -10,6 +10,7 @@
  */
 import { z } from 'zod';
 import { ApiError } from '@/server/http';
+import { throwInventoryRpcError } from '@/server/inventory/shared';
 import { emptyToNull, escapeOrKeyword, throwDbError, type ListQuery, type PagedResult } from '@/server/master-data/helpers';
 import { getSupabaseClient } from '@/storage/database/supabase-client';
 import type { SoSalesOrder, SoSalesOrderItem } from '@/storage/database/shared/schema';
@@ -406,5 +407,19 @@ export async function cancelOrder(id: string): Promise<SalesOrderView> {
     .update({ status: 'cancelled', cancelled_at: new Date().toISOString(), updated_at: new Date().toISOString() })
     .eq('id', id);
   if (error) throwDbError(error, '取消销售订单');
+  return getOrder(id);
+}
+
+/**
+ * 发货完成：confirmed → completed 并整单出库。
+ * 强一致由数据库函数 inv_complete_sales 单事务保证；库存不足整单回滚。
+ */
+export async function completeOrder(id: string, operatorId: string): Promise<SalesOrderView> {
+  const supabase = getSupabaseClient();
+  const { error } = await supabase.rpc('inv_complete_sales', {
+    p_order_id: id,
+    p_user_id: operatorId,
+  });
+  if (error) throwInventoryRpcError(error, '销售发货');
   return getOrder(id);
 }

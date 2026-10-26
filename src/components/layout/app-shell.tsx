@@ -4,6 +4,8 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import {
+  Boxes,
+  ClipboardList,
   LayoutDashboard,
   Layers,
   LogOut,
@@ -63,6 +65,13 @@ const NAV: NavGroup[] = [
     group: '销售管理',
     items: [
       { title: '销售订单', href: '/sales/orders', icon: Receipt, permission: 'so.read' },
+    ],
+  },
+  {
+    group: '库存管理',
+    items: [
+      { title: '库存余额', href: '/inventory/stock', icon: Boxes, permission: 'inv.read' },
+      { title: '库存流水', href: '/inventory/movements', icon: ClipboardList, permission: 'inv.read' },
     ],
   },
 ];

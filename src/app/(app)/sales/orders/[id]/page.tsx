@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { toast } from 'sonner';
-import { ArrowLeft, Ban, CheckCircle2, Pencil, Trash2 } from 'lucide-react';
+import { ArrowLeft, Ban, CheckCircle2, Truck, Pencil, Trash2 } from 'lucide-react';
 import { apiFetch, ApiClientError } from '@/lib/api-client';
 import { useAuth } from '@/components/auth/auth-provider';
 import type { SalesOrder } from '@/lib/types';
@@ -42,6 +42,7 @@ export default function SalesOrderDetailPage() {
   const [editing, setEditing] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [cancelOpen, setCancelOpen] = useState(false);
+  const [completeOpen, setCompleteOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
 
   const load = useCallback(() => {
@@ -144,10 +145,16 @@ export default function SalesOrderDetailPage() {
           </div>
         ) : null}
         {writable && order.status === 'confirmed' ? (
-          <Button variant="outline" size="sm" onClick={() => setCancelOpen(true)}>
-            <Ban className="mr-1 h-4 w-4" />
-            取消订单
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            <Button size="sm" onClick={() => setCompleteOpen(true)}>
+              <Truck className="mr-1 h-4 w-4" />
+              发货出库
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => setCancelOpen(true)}>
+              <Ban className="mr-1 h-4 w-4" />
+              取消订单
+            </Button>
+          </div>
         ) : null}
       </div>
 
@@ -285,6 +292,15 @@ export default function SalesOrderDetailPage() {
         actionLabel="取消订单"
         endpoint={`/api/so/orders/${order.id}/cancel`}
         destructive
+        onDone={load}
+      />
+      <ConfirmActionDialog
+        open={completeOpen}
+        onOpenChange={setCompleteOpen}
+        title="销售发货出库"
+        description={`确认订单「${order.order_no}」发货？系统将按明细整单扣减库存；若库存不足将整单拦截、订单状态不变。完成后不可撤销。`}
+        actionLabel="确认发货出库"
+        endpoint={`/api/so/orders/${order.id}/complete`}
         onDone={load}
       />
       <DeleteConfirmDialog

@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { toast } from 'sonner';
-import { ArrowLeft, Ban, CheckCircle2, Pencil, Trash2 } from 'lucide-react';
+import { ArrowLeft, Ban, CheckCircle2, PackageCheck, Pencil, Trash2 } from 'lucide-react';
 import { apiFetch, ApiClientError } from '@/lib/api-client';
 import { useAuth } from '@/components/auth/auth-provider';
 import type { PurchaseOrder } from '@/lib/types';
@@ -42,6 +42,7 @@ export default function PurchaseOrderDetailPage() {
   const [editing, setEditing] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [cancelOpen, setCancelOpen] = useState(false);
+  const [completeOpen, setCompleteOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
 
   const load = useCallback(() => {
@@ -144,10 +145,16 @@ export default function PurchaseOrderDetailPage() {
           </div>
         ) : null}
         {writable && order.status === 'confirmed' ? (
-          <Button variant="outline" size="sm" onClick={() => setCancelOpen(true)}>
-            <Ban className="mr-1 h-4 w-4" />
-            取消订单
-          </Button>
+          <div className="flex flex-wrap gap-2">
+            <Button size="sm" onClick={() => setCompleteOpen(true)}>
+              <PackageCheck className="mr-1 h-4 w-4" />
+              到货入库
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => setCancelOpen(true)}>
+              <Ban className="mr-1 h-4 w-4" />
+              取消订单
+            </Button>
+          </div>
         ) : null}
       </div>
 
@@ -285,6 +292,15 @@ export default function PurchaseOrderDetailPage() {
         actionLabel="取消订单"
         endpoint={`/api/po/orders/${order.id}/cancel`}
         destructive
+        onDone={load}
+      />
+      <ConfirmActionDialog
+        open={completeOpen}
+        onOpenChange={setCompleteOpen}
+        title="采购到货入库"
+        description={`确认订单「${order.order_no}」已到货？系统将按明细整单计入库存，单据状态变为已完成，此操作不可撤销。`}
+        actionLabel="确认到货入库"
+        endpoint={`/api/po/orders/${order.id}/complete`}
         onDone={load}
       />
       <DeleteConfirmDialog

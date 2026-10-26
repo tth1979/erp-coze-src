@@ -52,7 +52,8 @@
 | 基础资料模块 | `md_*` | 客户、供应商、商品主数据 |
 | 采购模块（已交付 MVP） | `po_*` | 采购订单 + 明细，状态机 draft→confirmed→completed / cancelled |
 | 销售模块（已交付 MVP） | `so_*` | 销售订单 + 明细，状态机同采购 |
-| 后续业务模块（预留） | `inv_*` / `fin_*` | 库存 / 财务 |
+| 库存模块（已交付 MVP） | `inv_*` | 库存余额 + 只追加流水台账，采购到货入库 / 销售发货出库 |
+| 后续业务模块（预留） | `fin_*` | 财务 |
 
 > 托管 PostgREST 仅暴露 public schema，故以表名前缀实现"单库逻辑多 schema"隔离。
 
@@ -83,10 +84,14 @@
 | GET/PUT/DELETE | /api/po/orders/[id] | po.read / po.write | 订单详情（含明细）/ 更新 / 删除（仅 draft） |
 | POST | /api/po/orders/[id]/confirm | po.write | 确认订单（draft→confirmed） |
 | POST | /api/po/orders/[id]/cancel | po.write | 取消订单（draft/confirmed→cancelled） |
+| POST | /api/po/orders/[id]/complete | po.write | 到货入库（confirmed→completed，联动库存） |
 | GET/POST | /api/so/orders | so.read / so.write | 销售订单分页列表 / 新建（草稿） |
 | GET/PUT/DELETE | /api/so/orders/[id] | so.read / so.write | 订单详情 / 更新 / 删除（仅 draft） |
 | POST | /api/so/orders/[id]/confirm | so.write | 确认订单（draft→confirmed） |
 | POST | /api/so/orders/[id]/cancel | so.write | 取消订单（draft/confirmed→cancelled） |
+| POST | /api/so/orders/[id]/complete | so.write | 发货出库（confirmed→completed，联动库存，库存不足整单 400 拦截） |
+| GET | /api/inv/stock | inv.read | 库存余额分页（商品名/编码 keyword 搜索） |
+| GET | /api/inv/movements | inv.read | 库存流水分页（type=in/out/adjust、商品/单号 keyword） |
 
 分页参数：`page`(≥1) `pageSize`(1-100) `keyword`（模糊搜索）；响应 `{ items, total, page, page_size }`。
 
@@ -95,8 +100,24 @@
 - **表**：`po_purchase_orders`（单头：order_no 唯一、supplier_id FK、status、order_date、total_amount、created_by）+ `po_purchase_order_items`（明细：order_id FK cascade、product_id FK、quantity/unit_price/amount、unit 快照）。
 - **单号**：`POyyyymmdd-NNNN`，按当日数量+1 生成，唯一约束冲突（23505）重试一次。
 - **金额**：一律服务端按明细 `quantity × unit_price` 计算行金额与总额，不信任客户端传值。
-- **状态机**：仅 `draft` 可编辑/删除；`confirmed` 不可再改明细；`completed` 待库存里程碑接入到货后流转。
+- **状态机**：仅 `draft` 可编辑/删除；`confirmed` 不可再改明细；`completed` 由"到货入库"（complete）流转，同时联动库存入账。
 - **补偿式写入**：Supabase SDK 无多语句事务，"单头+明细"写入采用补偿模式（明细插入失败则删除单头），见 `src/server/purchase/orders.ts` 头注释；后续可迁移存储过程。
+
+### 库存模块约定（inv_*）
+
+- **表**：`inv_stock`（余额，product_id 唯一 FK→md_products，quantity numeric(14,3)）+ `inv_stock_movements`（**只追加**流水：type in/out/adjust、quantity 带符号、balance 余额快照、source purchase_in/sales_out/manual、ref_no 关联单号、remark、created_by FK→sys_users）。流水不做 UPDATE/DELETE。
+- **强一致联动**：Supabase SDK 无多语句事务，故"状态流转 + 库存余额更新 + 流水追加"下沉为 plpgsql 数据库函数在**单事务**内完成（见 `db/migrations/0004_inventory.sql`）：
+  - `inv_apply_movement(p_product_id, p_type, p_quantity, p_source, p_ref_no, p_remark, p_user_id)`：`SELECT ... FOR UPDATE` 行锁串行化更新余额，upsert 余额行，写流水；库存不足（出库后余额<0）`RAISE EXCEPTION 'P0001:...'` 整事务回滚。
+  - `inv_complete_purchase(p_order_id, p_user_id)` / `inv_complete_sales(...)`：校验订单 confirmed、遍历明细逐行 apply movement，最后置 completed。
+- **错误码映射**：服务端 `src/server/inventory/shared.ts` 解析 SQLSTATE —— `P0001`→400 `INV.INSUFFICIENT_STOCK`（库存不足）、`P0404`→404、`P0400`→400 `INV.BAD_TRANSITION`，其余→500。库存不足时订单保持 `confirmed`、余额不变。
+- **触发时机**：采购详情 confirmed 态"到货入库"、销售详情 confirmed 态"发货出库"，均走 `POST /api/{po|so}/orders/[id]/complete`。
+- **权限**：`inv.read`（manager/staff/admin 只读）；当前无手工写库存界面，`inv.write` 预留给后续"手工盘点调整"。
+- **仪表盘**：`/api/stats/overview` 返回 `inventory:{tracked_kinds, out_of_stock}`（纳管品类数、quantity<=0 缺货数）。
+
+### PostgREST 查询注意事项
+
+- `.or()` 过滤器**不支持嵌入表列名前缀**（`or=(product.name.ilike.*,...*)` 或带表别名均报 `failed to parse logic tree`）。需要按嵌入商品名/编码模糊搜索时，先在主数据查出匹配 `md_products.id` 列表，再对库存/流水用 `.in('product_id', ids)`（无匹配则直接返回空页）。见 `src/server/inventory/stock.ts` 的 `matchProductIds`。
+- 嵌入关联依赖真实外键约束；`created_by` 等 FK 若 db upgrade 未生成，需 exec_sql 补建并在迁移文件加幂等 DO 块。补全操作人姓名采用两步查询（批量取 sys_users 的 username/display_name 再 map），不依赖嵌入。
 
 ### 销售模块约定（so_*）
 
@@ -121,14 +142,16 @@ src/
 │   ├── http.ts              # ApiError + 统一错误处理
 │   ├── auth/                # password(scrypt)/session/permissions/guard/bootstrap
 │   ├── master-data/         # 客户/供应商/商品的查询/校验/序列化 + helpers(分页/模糊搜索)
-│   ├── purchase/            # 采购订单服务（单号生成/金额核算/状态流转）
-│   └── sales/               # 销售订单服务（镜像采购）
+│   ├── purchase/            # 采购订单服务（单号生成/金额核算/状态流转/complete 入库）
+│   ├── sales/               # 销售订单服务（镜像采购/complete 出库）
+│   └── inventory/           # 库存服务（stock 余额查询 / movements 流水 / shared RPC 错误映射）
 ├── app/api/                 # Route Handlers（薄层，调 server 服务）
 ├── app/(app)/               # 登录后区域（路由组，layout 内做守卫）
-│   ├── dashboard/           # 仪表盘（含采购/销售订单统计卡片）
+│   ├── dashboard/           # 仪表盘（含采购/销售/库存统计卡片）
 │   ├── master-data/         # customers / suppliers / products 页面
-│   ├── purchase/orders/     # 采购订单列表 / new / [id] 详情（详情页内切换编辑态）
-│   └── sales/orders/        # 销售订单列表 / new / [id] 详情
+│   ├── purchase/orders/     # 采购订单列表 / new / [id] 详情（详情页内切换编辑态，confirmed 可到货入库）
+│   ├── sales/orders/        # 销售订单列表 / new / [id] 详情（confirmed 可发货出库）
+│   └── inventory/           # stock 库存余额 / movements 库存流水
 ├── components/
 │   ├── auth/auth-provider.tsx   # 会话 Context（useAuth().can()）
 │   ├── layout/app-shell.tsx     # 侧边栏 + 顶栏（移动端抽屉导航）
@@ -136,7 +159,7 @@ src/
 │   └── trade/                   # 购销通用：订单编辑器(kind 区分购销) / 状态徽章 / 动作确认弹窗
 ├── lib/                     # api-client / types / use-paged-list(支持 filters)
 └── storage/database/        # supabase-client.ts + shared/schema.ts
-db/migrations/               # 版本化 SQL（0001 基础+认证 / 0002 采购 / 0003 销售）
+db/migrations/               # 版本化 SQL（0001 基础+认证 / 0002 采购 / 0003 销售 / 0004 库存）
 scripts/seed-dev.ts          # DEV 测试账号种子
 ```
 
@@ -144,6 +167,8 @@ scripts/seed-dev.ts          # DEV 测试账号种子
 
 - `test_run` 命令并行执行且跨命令共享状态不可靠：每条命令必须自包含（自带 login、独立 cookie jar）；负向断言用 `CODE=$(curl -w '%{http_code}' ...)` + `test` 收口。
 - curl 直接发**未百分号编码的非 ASCII query**（如 `?keyword=冒烟`）会被 Node HTTP 层以 400 空响应拒绝（非业务错误）；冒烟用 ASCII 关键字（如单号），中文模糊搜索由浏览器自动编码，不影响前端使用。
+- 超长、含多层嵌套引号的 shell 在 test_run 中转义易被破坏；复杂全链路（登录→建资料→建单→确认→出入库→断言）用自包含 Python 脚本（`urllib` + `http.cookiejar.CookieJar`，TS 后缀避免单号/编码冲突）驱动，打印 `XXX_SMOKE_OK` 收口。
+- completed 单据不可删除且外键引用客户/供应商/商品，库存流水只追加，故冒烟产生的主数据与库存数据保留在 DEV 库（业务断言通过即可），不要在脚本末尾强删。
 
 ## 包管理规范
 

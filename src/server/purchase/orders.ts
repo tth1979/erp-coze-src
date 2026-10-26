@@ -10,6 +10,7 @@
  */
 import { z } from 'zod';
 import { ApiError } from '@/server/http';
+import { throwInventoryRpcError } from '@/server/inventory/shared';
 import { emptyToNull, escapeOrKeyword, throwDbError, type ListQuery, type PagedResult } from '@/server/master-data/helpers';
 import { getSupabaseClient } from '@/storage/database/supabase-client';
 import type { PoPurchaseOrder, PoPurchaseOrderItem } from '@/storage/database/shared/schema';
@@ -406,5 +407,19 @@ export async function cancelOrder(id: string): Promise<PurchaseOrderView> {
     .update({ status: 'cancelled', cancelled_at: new Date().toISOString(), updated_at: new Date().toISOString() })
     .eq('id', id);
   if (error) throwDbError(error, '取消采购订单');
+  return getOrder(id);
+}
+
+/**
+ * 到货完成：confirmed → completed 并整单入库。
+ * 强一致由数据库函数 inv_complete_purchase 单事务保证。
+ */
+export async function completeOrder(id: string, operatorId: string): Promise<PurchaseOrderView> {
+  const supabase = getSupabaseClient();
+  const { error } = await supabase.rpc('inv_complete_purchase', {
+    p_order_id: id,
+    p_user_id: operatorId,
+  });
+  if (error) throwInventoryRpcError(error, '采购到货');
   return getOrder(id);
 }
