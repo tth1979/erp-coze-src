@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { ArrowRight, Boxes, Package, Receipt, ShoppingCart, Truck, Users } from 'lucide-react';
+import { ArrowRight, Boxes, HandCoins, Package, Receipt, ShoppingCart, Truck, Users, Wallet } from 'lucide-react';
 import { apiFetch } from '@/lib/api-client';
 import type { OverviewStats } from '@/lib/types';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -26,6 +26,7 @@ export default function DashboardPage() {
   const po = stats?.purchase_orders;
   const so = stats?.sales_orders;
   const inv = stats?.inventory;
+  const fin = stats?.finance;
 
   return (
     <div className="space-y-6">
@@ -142,6 +143,52 @@ export default function DashboardPage() {
             </Link>
           </CardContent>
         </Card>
+
+        {/* 财务卡片：应收 / 应付欠款 */}
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground">应收欠款</CardTitle>
+            <HandCoins className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            {fin ? (
+              <p className="text-2xl font-semibold tabular-nums">
+                ¥{fin.receivable_outstanding.toLocaleString('zh-CN', { minimumFractionDigits: 2 })}
+              </p>
+            ) : (
+              <Skeleton className="h-8 w-24" />
+            )}
+            <Link
+              href="/finance/receivables"
+              className="mt-2 inline-flex items-center gap-1 text-sm text-primary hover:underline"
+            >
+              查看应收
+              <ArrowRight className="h-3.5 w-3.5" />
+            </Link>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardTitle className="text-sm font-medium text-muted-foreground">应付欠款</CardTitle>
+            <Wallet className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            {fin ? (
+              <p className="text-2xl font-semibold tabular-nums">
+                ¥{fin.payable_outstanding.toLocaleString('zh-CN', { minimumFractionDigits: 2 })}
+              </p>
+            ) : (
+              <Skeleton className="h-8 w-24" />
+            )}
+            <Link
+              href="/finance/payables"
+              className="mt-2 inline-flex items-center gap-1 text-sm text-primary hover:underline"
+            >
+              查看应付
+              <ArrowRight className="h-3.5 w-3.5" />
+            </Link>
+          </CardContent>
+        </Card>
       </div>
 
       <Card>
@@ -150,8 +197,9 @@ export default function DashboardPage() {
         </CardHeader>
         <CardContent className="text-sm leading-6 text-muted-foreground">
           当前已交付：登录认证、角色权限雏形、基础资料（客户 / 供应商 / 商品主数据）、采购订单与销售订单（草稿 →
-          确认 → 完成，含明细行与金额核算），以及库存模块——采购到货自动入库、销售发货自动出库，库存余额与流水台账可查。
-          财务、加工、税务等模块将按里程碑迭代接入。
+          确认 → 完成，含明细行与金额核算）、库存模块（采购到货自动入库、销售发货自动出库，库存余额与流水台账可查），
+          以及财务模块——应收/应付欠款按客户与供应商实时汇总，支持登记收款/付款（超额拦截）并留存收付款流水台账。
+          加工、税务等模块将按里程碑迭代接入。
         </CardContent>
       </Card>
     </div>

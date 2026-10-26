@@ -6,6 +6,7 @@ import { usePathname, useRouter } from 'next/navigation';
 import {
   Boxes,
   ClipboardList,
+  HandCoins,
   LayoutDashboard,
   Layers,
   LogOut,
@@ -15,6 +16,7 @@ import {
   ShoppingCart,
   Truck,
   Users,
+  Wallet,
   X,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -72,6 +74,14 @@ const NAV: NavGroup[] = [
     items: [
       { title: '库存余额', href: '/inventory/stock', icon: Boxes, permission: 'inv.read' },
       { title: '库存流水', href: '/inventory/movements', icon: ClipboardList, permission: 'inv.read' },
+    ],
+  },
+  {
+    group: '财务管理',
+    items: [
+      { title: '应收欠款', href: '/finance/receivables', icon: HandCoins, permission: 'fin.read' },
+      { title: '应付欠款', href: '/finance/payables', icon: Wallet, permission: 'fin.read' },
+      { title: '收付款流水', href: '/finance/payments', icon: ClipboardList, permission: 'fin.read' },
     ],
   },
 ];

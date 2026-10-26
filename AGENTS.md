@@ -53,7 +53,8 @@
 | 采购模块（已交付 MVP） | `po_*` | 采购订单 + 明细，状态机 draft→confirmed→completed / cancelled |
 | 销售模块（已交付 MVP） | `so_*` | 销售订单 + 明细，状态机同采购 |
 | 库存模块（已交付 MVP） | `inv_*` | 库存余额 + 只追加流水台账，采购到货入库 / 销售发货出库 |
-| 后续业务模块（预留） | `fin_*` | 财务 |
+| 财务模块（已交付 MVP） | `fin_*` | 应收/应付欠款汇总 + 收付款单（超额拦截）+ 流水台账 |
+| 后续业务模块（预留） | `proc_*` / `tax_*` | 加工、税务 |
 
 > 托管 PostgREST 仅暴露 public schema，故以表名前缀实现"单库逻辑多 schema"隔离。
 
@@ -64,7 +65,7 @@
 - **权限模型**：角色 → 权限点映射在 `src/server/auth/permissions.ts`（admin=`*`，manager=读写，staff=只读）。
   API 层用 `requireAuth(request)` / `requirePermission(auth, 'md.write')` 做守卫；前端 `useAuth().can()` 控制菜单/按钮显隐。
 - **升级路径**：T3 完整 RBAC（roles/permissions/role_permissions/user_roles 四表）为单向加表升级，见 `src/server/auth/permissions.ts` 注释。
-- **DEV 测试账号**：`pnpm tsx scripts/seed-dev.ts`（仅 DEV 可执行，密码运行时随机生成、只打印控制台）。
+- **DEV 测试账号**：`pnpm tsx scripts/seed-dev.ts`（仅 DEV 可执行，密码运行时随机生成、只打印控制台）。staff 角色冒烟账号为 `dev_user@coze.dev`（种子生成；密码需自设，可用临时脚本调 `hashPassword` 更新 `sys_user_credentials.secret_hash`）。
 
 ### API 清单（错误格式 `{ code, message }`）
 
@@ -92,6 +93,12 @@
 | POST | /api/so/orders/[id]/complete | so.write | 发货出库（confirmed→completed，联动库存，库存不足整单 400 拦截） |
 | GET | /api/inv/stock | inv.read | 库存余额分页（商品名/编码 keyword 搜索） |
 | GET | /api/inv/movements | inv.read | 库存流水分页（type=in/out/adjust、商品/单号 keyword） |
+| GET | /api/fin/receivables | fin.read | 应收欠款按客户汇总分页（billed/received/outstanding，keyword 搜客户） |
+| GET | /api/fin/payables | fin.read | 应付欠款按供应商汇总分页（billed/paid/outstanding） |
+| GET/POST | /api/fin/receipts | fin.read / fin.write | 收款单分页列表 / 登记收款 |
+| DELETE | /api/fin/receipts/[id] | fin.write | 删除收款单（欠款回升） |
+| GET/POST | /api/fin/payments | fin.read / fin.write | 付款单分页列表（direction 筛选）/ 登记付款 |
+| DELETE | /api/fin/payments/[id] | fin.write | 删除付款单 |
 
 分页参数：`page`(≥1) `pageSize`(1-100) `keyword`（模糊搜索）；响应 `{ items, total, page, page_size }`。
 
@@ -119,6 +126,16 @@
 - `.or()` 过滤器**不支持嵌入表列名前缀**（`or=(product.name.ilike.*,...*)` 或带表别名均报 `failed to parse logic tree`）。需要按嵌入商品名/编码模糊搜索时，先在主数据查出匹配 `md_products.id` 列表，再对库存/流水用 `.in('product_id', ids)`（无匹配则直接返回空页）。见 `src/server/inventory/stock.ts` 的 `matchProductIds`。
 - 嵌入关联依赖真实外键约束；`created_by` 等 FK 若 db upgrade 未生成，需 exec_sql 补建并在迁移文件加幂等 DO 块。补全操作人姓名采用两步查询（批量取 sys_users 的 username/display_name 再 map），不依赖嵌入。
 
+### 财务模块约定（fin_*）
+
+- **表**：单表 `fin_payments` 承载收付款单——`doc_no` 唯一（收款 `RCyyyymmdd-NNNN`、付款 `PYyyyymmdd-NNNN`）、`direction`(receipt/payment)、`customer_id`/`supplier_id` 二选一 FK（方向决定哪个非空）、`order_id`+`order_no` 冗余快照（关联订单可空，不建 FK，因方向不同指向 so/po 两张表）、`amount numeric(14,2)`、`method`(cash/bank/wechat/alipay/other)、`paid_at`、`created_by` FK。
+- **欠款口径**：客户应收 = Σ(completed 销售订单总额) − Σ(该客户收款)；供应商应付 = Σ(completed 采购订单总额) − Σ(该供应商付款)。汇总在服务端内存聚合（先分页查客户/供应商，再批量聚合该页 ID 的订单与收付款），不建数据库视图，保持 SDK-only 约束。
+- **超额拦截**：登记收/付款时校验不超该客户/供应商当前欠款，超出返回 400 `FIN.OVER_AMOUNT`（含剩余金额提示）；关联订单时另校验订单归属与 completed 状态。预付/预收科目留待后续里程碑。
+- **删除即回滚**：MVP 允许 DELETE 收付款单（欠款相应回升）；正式财务场景后续改红冲。
+- **权限**：`fin.read` / `fin.write`（manager 读写、staff 只读）。
+- **仪表盘**：`/api/stats/overview` 返回 `finance:{receivable_outstanding, payable_outstanding}`。
+- **前端**：`src/components/finance/balance-list.tsx` 欠款汇总列表（kind 区分应收/应付，行内收/付款按钮）、`payment-form-dialog.tsx` 登记对话框（金额预填当前欠款）；页面 `/finance/receivables`、`/finance/payables`、`/finance/payments`（流水台账，可删除）。
+
 ### 销售模块约定（so_*）
 
 - 结构与约定完全镜像采购模块：`so_sales_orders`（customer_id FK → md_customers）+ `so_sales_order_items`；单号前缀 `SO`；权限 `so.read` / `so.write`。
@@ -144,22 +161,25 @@ src/
 │   ├── master-data/         # 客户/供应商/商品的查询/校验/序列化 + helpers(分页/模糊搜索)
 │   ├── purchase/            # 采购订单服务（单号生成/金额核算/状态流转/complete 入库）
 │   ├── sales/               # 销售订单服务（镜像采购/complete 出库）
-│   └── inventory/           # 库存服务（stock 余额查询 / movements 流水 / shared RPC 错误映射）
+│   ├── inventory/           # 库存服务（stock 余额查询 / movements 流水 / shared RPC 错误映射）
+│   └── finance/             # 财务服务（payments 收付款单 CRUD + 应收/应付欠款汇总 + 超额校验）
 ├── app/api/                 # Route Handlers（薄层，调 server 服务）
 ├── app/(app)/               # 登录后区域（路由组，layout 内做守卫）
-│   ├── dashboard/           # 仪表盘（含采购/销售/库存统计卡片）
+│   ├── dashboard/           # 仪表盘（含采购/销售/库存/财务统计卡片）
 │   ├── master-data/         # customers / suppliers / products 页面
 │   ├── purchase/orders/     # 采购订单列表 / new / [id] 详情（详情页内切换编辑态，confirmed 可到货入库）
 │   ├── sales/orders/        # 销售订单列表 / new / [id] 详情（confirmed 可发货出库）
-│   └── inventory/           # stock 库存余额 / movements 库存流水
+│   ├── inventory/           # stock 库存余额 / movements 库存流水
+│   └── finance/             # receivables 应收欠款 / payables 应付欠款 / payments 收付款流水
 ├── components/
 │   ├── auth/auth-provider.tsx   # 会话 Context（useAuth().can()）
 │   ├── layout/app-shell.tsx     # 侧边栏 + 顶栏（移动端抽屉导航）
 │   ├── master-data/             # 表单对话框 / 分页 / 状态徽章 / 删除确认
-│   └── trade/                   # 购销通用：订单编辑器(kind 区分购销) / 状态徽章 / 动作确认弹窗
+│   ├── trade/                   # 购销通用：订单编辑器(kind 区分购销) / 状态徽章 / 动作确认弹窗
+│   └── finance/                 # 财务通用：欠款汇总列表(kind 区分应收应付) / 收付款登记对话框
 ├── lib/                     # api-client / types / use-paged-list(支持 filters)
 └── storage/database/        # supabase-client.ts + shared/schema.ts
-db/migrations/               # 版本化 SQL（0001 基础+认证 / 0002 采购 / 0003 销售 / 0004 库存）
+db/migrations/               # 版本化 SQL（0001 基础+认证 / 0002 采购 / 0003 销售 / 0004 库存 / 0005 财务）
 scripts/seed-dev.ts          # DEV 测试账号种子
 ```
 

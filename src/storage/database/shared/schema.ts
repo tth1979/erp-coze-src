@@ -368,6 +368,51 @@ export const invStockMovements = pgTable(
 );
 
 // ============================================================
+// 财务模块（fin_*）：收付款台账 + 应收/应付欠款
+// 欠款 = Σ(已完成订单总额) − Σ(收付款)，服务端内存聚合（不建视图）
+// ============================================================
+
+/** 收付款单（台账：receipt=收款 / payment=付款，共用一表） */
+export const finPayments = pgTable(
+  "fin_payments",
+  {
+    id: varchar("id", { length: 36 }).primaryKey().default(sql`gen_random_uuid()`),
+    /** 单号：RCyyyymmdd-NNNN（收款）/ PYyyyymmdd-NNNN（付款），业务唯一 */
+    doc_no: varchar("doc_no", { length: 32 }).notNull().unique(),
+    /** 方向：receipt(收款，关联客户) | payment(付款，关联供应商) */
+    direction: varchar("direction", { length: 16 }).notNull(),
+    /** 客户（direction=receipt 时非空） */
+    customer_id: varchar("customer_id", { length: 36 }).references(() => mdCustomers.id),
+    /** 供应商（direction=payment 时非空） */
+    supplier_id: varchar("supplier_id", { length: 36 }).references(() => mdSuppliers.id),
+    /**
+     * 关联订单 ID（可空；receipt→so_sales_orders.id / payment→po_purchase_orders.id）。
+     * 因指向不同表不建 FK，仅存值 + order_no 快照。
+     */
+    order_id: varchar("order_id", { length: 36 }),
+    /** 关联单号快照（便于台账直接对账） */
+    order_no: varchar("order_no", { length: 32 }),
+    /** 金额（>0，两位小数） */
+    amount: numeric("amount", { precision: 14, scale: 2 }).notNull(),
+    /** 方式：cash(现金) | bank(银行转账) | wechat(微信) | alipay(支付宝) | other(其他) */
+    method: varchar("method", { length: 32 }).notNull().default("bank"),
+    /** 收付款日期（YYYY-MM-DD） */
+    paid_at: date("paid_at", { mode: "string" }).notNull(),
+    remark: text("remark"),
+    created_by: varchar("created_by", { length: 36 }).references(() => sysUsers.id),
+    created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updated_at: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index("fin_payments_direction_idx").on(table.direction),
+    index("fin_payments_customer_idx").on(table.customer_id),
+    index("fin_payments_supplier_idx").on(table.supplier_id),
+    index("fin_payments_paid_at_idx").on(table.paid_at),
+    index("fin_payments_created_at_idx").on(table.created_at),
+  ],
+);
+
+// ============================================================
 // 类型导出
 // ============================================================
 export type SysUser = typeof sysUsers.$inferSelect;
@@ -382,3 +427,4 @@ export type SoSalesOrder = typeof soSalesOrders.$inferSelect;
 export type SoSalesOrderItem = typeof soSalesOrderItems.$inferSelect;
 export type InvStock = typeof invStock.$inferSelect;
 export type InvStockMovement = typeof invStockMovements.$inferSelect;
+export type FinPayment = typeof finPayments.$inferSelect;

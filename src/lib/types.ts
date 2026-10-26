@@ -85,6 +85,10 @@ export interface OverviewStats {
     tracked_kinds: number;
     out_of_stock: number;
   };
+  finance?: {
+    receivable_outstanding: number;
+    payable_outstanding: number;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -194,4 +198,52 @@ export interface StockMovement {
   remark: string | null;
   created_by_name: string | null;
   created_at: string;
+}
+
+// ---------------------------------------------------------------------------
+// 财务模块
+// ---------------------------------------------------------------------------
+
+/** 收付款单（receipt 收款 | payment 付款） */
+export interface FinPayment {
+  id: string;
+  doc_no: string;
+  direction: 'receipt' | 'payment';
+  customer_id: string | null;
+  customer_name: string | null;
+  supplier_id: string | null;
+  supplier_name: string | null;
+  order_id: string | null;
+  order_no: string | null;
+  amount: number;
+  /** cash | bank | wechat | alipay | other */
+  method: string;
+  paid_at: string;
+  remark: string | null;
+  created_by_name: string | null;
+  created_at: string;
+}
+
+/** 应收欠款聚合行（按客户） */
+export interface ReceivableRow {
+  customer_id: string;
+  code: string;
+  name: string;
+  contact: string | null;
+  phone: string | null;
+  billed: number;
+  received: number;
+  outstanding: number;
+}
+
+/** 应付欠款聚合行（按供应商） */
+export interface PayableRow {
+  supplier_id: string;
+  code: string;
+  name: string;
+  contact: string | null;
+  phone: string | null;
+  billed: number;
+  paid: number;
+  outstanding: number;
 }
