@@ -57,6 +57,25 @@ const RECEIPT_REVERSE: Template = {
   ],
   balance_to: { account: '6601', account_name: '管理费用' },
 };
+// 与 db/migrations/0013_cost_finish 内置模板 spec 保持一致（成本结转）
+const MANUFACTURE_FINISH: Template = {
+  template_code: 'MANUFACTURE_FINISH',
+  event_type: 'manufacture_finish',
+  spec: [
+    { dc: 'd', account: '1405', account_name: '库存商品', expr: '#amount' },
+    { dc: 'c', account: '5101', account_name: '生产成本—加工归集', expr: '#amount' },
+  ],
+  balance_to: { account: '6601', account_name: '管理费用' },
+};
+const SALES_SHIPMENT_COST: Template = {
+  template_code: 'SALES_SHIPMENT_COST',
+  event_type: 'sales_cof_shipment',
+  spec: [
+    { dc: 'd', account: '6401', account_name: '主营业务成本', expr: '#amount' },
+    { dc: 'c', account: '1405', account_name: '库存商品', expr: '#amount' },
+  ],
+  balance_to: { account: '6601', account_name: '管理费用' },
+};
 
 let failures = 0;
 let passed = 0;
@@ -148,6 +167,23 @@ console.log('\n— 尾差兜底 —');
   assert('总借=总贷 100.01', out.total_debit === 100.01 && out.total_credit === 100.01);
   const tail = out.lines.find((l) => l.account_code === '6601');
   assert('尾差补入管理费用 0.01', tail !== undefined && Math.abs(amt(tail)) === 0.01);
+}
+
+// 7. 加工完工成本结转：单金额 → 借库存商品 / 贷加工成本归集
+console.log('\n— 加工完工成本结转 —');
+{
+  const out = blob('加工完工结转', MANUFACTURE_FINISH, { amount: 4320 });
+  assert('借：库存商品 4320', amt(out.lines[0]) === 4320);
+  assert('贷：生产成本—加工归集 4320', amt(out.lines[1]) === 4320);
+}
+
+// 8. 销售出库成本结转：单金额 → 借主营成本 / 贷库存商品（与收入凭证分离模板）
+console.log('\n— 销售出库成本结转 —');
+{
+  const out = blob('销售出库结成本', SALES_SHIPMENT_COST, { amount: 2880.5 });
+  assert('借：主营业务成本 2880.5', amt(out.lines[0]) === 2880.5);
+  assert('贷：库存商品 2880.5', amt(out.lines[1]) === 2880.5);
+  assert('成本模板与收入模板 event_type 不同', SALES_SHIPMENT_COST.event_type !== SALES_SHIPMENT.event_type);
 }
 
 console.log(`\n${passed} passed, ${failures} failed`);

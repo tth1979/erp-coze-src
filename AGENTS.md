@@ -149,6 +149,8 @@
 | POST | /api/fin/vouchers/[id]/void | fin.write | 红字冲销（红冲冗余：原凭证→void 并生成等额反号红冲凭证，禁对已作废/已冲销重复红冲） |
 | GET | /api/tax/entries | fin.read | 税额登记分页（tax_type/period/keyword = 单号模糊） |
 | GET | /api/tax/summary | fin.read | 期间×税率税额统计（销项/进项 金额·计税基数·税额，内存聚合） |
+| GET | /api/tax/filing?period=YYYY-MM | fin.read | 增值税纳税申报主表数据来源：按期间销项/进项 + vat_payable/carried_forward（留抵） |
+| POST | /api/fin/vouchers/period-close | admin / fin.write | 期末成本结转批处理 { period }，幂等补生成成本凭证，返回新增计数 |
 | GET | /api/report/overview | 已登录 | 经营报表汇总：cards(采购/销售/毛利/应收应付/库存总值) + buckets(今日/本月/累计) + trends(近12月趋势) |
 | GET | /api/report/purchase | 已登录 | 采购报表（groupBy=suppider/month，from/to 过滤） |
 | GET | /api/report/sales | 已登录 | 销售报表（groupBy=customer/product/month，from/to 过滤） |
@@ -236,6 +238,15 @@
 - **正确性回归**：`scripts/ledger-golden.ts`（`pnpm tsx scripts/ledger-golden.ts`）纯函数 23 条断言（buildVoucherEntries 借贷平衡/尾差归集/五模板分录、含税拆分、多税率），CI 必跑。
 - **权限**：凭证与税务读 `fin.read`（staff 只读）、红冲/删除/税额写 `fin.write`（manager）。
 - **前端**：`/finance/vouchers`（凭证列表：日期/状态筛选、查看借贷行明细、行内红冲）、`/tax/taxes`（期间×税率税额汇总 + 登记明细）；导航「财务→记账凭证、税务→税额统计」。
+
+### 收尾增强（成本结转 / 税申报 / 按单核销 / PDA 出入库，0013）
+
+- **成本结转两套模板（迁移 0013，幂等种子）**：`MANUFACTURE_FINISH`（event=manufacture_finish，借 1405 库存商品 `#amount` / 贷 5101 生产成本—加工归集 `#amount`）与 `SALES_SHIPMENT_COST`（event=sales_cof_shipment，借 6401 主营业务成本 `#amount` / 贷 1405 库存商品 `#amount`）；均 `balance_to=6601 管理费用`。`src/server/ledger/events.ts` 新增 `onSalesShipmentCost` / `onManufactureFinish`（按 (event_type,event_id) 幂等）。
+- **接入点**：`sales/shipments.ts#approveShipment` 与 `sales/orders.ts#completeOrder`（一键发货）终审出库后生成销售成本凭证（cost=单头 `total_cost`）；`processing.ts#finishManufacturing` 在加工单 →completed 后生成加工完工成本凭证（cost=`issued_cost` 投入成本，差额按损耗处理）。
+- **期末成本结转批处理**：`src/server/ledger/period-close.ts#closePeriodCostTransfer(period, operatorId)` 扫描期间内 `so_shipments.status=approved`（按 approved_at）与 `ma_* status=completed`（按 updated_at），对缺失凭证幂等补生成；`POST /api/fin/vouchers/period-close {period}`（admin 或 fin.write），返回 `{shipment_cost, manufacture_finish}` 新增计数（二次执行为 0）。
+- **纳税申报雏形**：`src/server/tax/tax.ts#getTaxFiling(period)` 按期间聚合 `tax_entries` → 销项/进项 金额·基数·税额，`deductible_input=进项税`（雏形默认全可抵扣）、`vat_payable=max(销项−可抵扣,0)`、`carried_forward=max(可抵扣−销项,0)`，并分税率 rows；`GET /api/tax/filing?period=YYYY-MM`（fin.read，校验格式）→ 页面 `/tax/filing`（导航「税务→纳税申报」）；`md_products.tax_rate` 已贯穿 create/update zod schema + normalize（数字，>0，缺省 13），确保写读路径生效。
+- **按单核销前端**：`fin_payments` 本已支持 `order_id`（收款=销售订单=应收单、付款=采购订单=应付单）；`FinBillRow` 服务端(payments.ts#listBills)与 `src/lib/types.ts` 补 `order_id`；`fin-bills.tsx` 应收/应付单表格升级为复选框多选（open 行）+ 按所选核销 + 每行核销按钮；`payment-form-dialog.tsx` 支持 `bills?: FinBillRow[]` 多单分摊登记（先扣 outstanding 大者），前端校验合计 ≤ 所选 outstanding，服务端靠 `fin_apply_receipt/payment` 超额拦截兜底（400 `FIN.OVER_AMOUNT`）。
+- **PDA 扫码出入库**：`/m/pda/stock-io`（'use client'，采购入库 GR / 销售出库 SH 双 Tab）弱耦合只读复用 `GET /api/po/receipts`、`GET /api/so/shipments`（列表，draft/pending/approved）与 `GET ...[id]`（明细含 `product_sku`）；扫描/输入条码按 `product_sku`（或品名含）匹配明细并高亮核对计数，本地确认汇总、**不新增端点/不落数据**。`/m/` 首页新增「扫码出入库」卡片、底部导航 `grid-cols-5` 补「出入库」。
 
 ### 销售模块约定（so_*，V2 三单主链路）
 
@@ -330,7 +341,7 @@ src/
 │   └── finance/                 # 财务通用：欠款汇总列表(kind 区分应收应付) / 收付款登记对话框 / 凭证/税务页面组件
 ├── lib/                     # api-client / types / use-paged-list(支持 filters)
 └── storage/database/        # supabase-client.ts + shared/schema.ts
-db/migrations/               # 版本化 SQL（0001 基础+认证 / 0002 采购 / 0003 销售 / 0004 库存 / 0005 财务 / 0006 采购 V2 五单+审批+成本+冲回 / 0007 销售 V2 出库+退货+等级报价 / 0008 库存 V2 多仓+批次+调拨+盘点+预警 / 0009 周边：系统字典 dict_* + 计量单位 md_units / 0010 财务 V2 应收应付核销：fin_payments 加核销状态列+索引+fin_apply_receipt/payment 与 fin_cancel_receipt/payment plpgsql 函数（幂等 + RLS） / 0011 财务凭证引擎+税务：fin_voucher_templates/fin_vouchers/fin_voucher_lines + tax_entries 表、md_products.tax_rate列、5 组内置凭证模板（均幂等 + RLS））
+db/migrations/               # 版本化 SQL（0001 基础+认证 / 0002 采购 / 0003 销售 / 0004 库存 / 0005 财务 / 0006 采购 V2 五单+审批+成本+冲回 / 0007 销售 V2 出库+退货+等级报价 / 0008 库存 V2 多仓+批次+调拨+盘点+预警 / 0009 周边：系统字典 dict_* + 计量单位 md_units / 0010 财务 V2 应收应付核销：fin_payments 加核销状态列+索引+fin_apply_receipt/payment 与 fin_cancel_receipt/payment plpgsql 函数（幂等 + RLS） / 0011 财务凭证引擎+税务：fin_voucher_templates/fin_vouchers/fin_voucher_lines + tax_entries 表、md_products.tax_rate列、5 组内置凭证模板（均幂等 + RLS） / 0012 加工 ma_* / 0013 成本结转凭证：MANUFACTURE_FINISH + SALES_SHIPMENT_COST 两套模板种子（幂等））
 scripts/seed-dev.ts          # DEV 测试账号种子
 ```
 

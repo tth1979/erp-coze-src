@@ -13,6 +13,8 @@ export const EVENT_PURCHASE_RECEIPT = 'purchase_receipt';
 export const EVENT_RECEIPT_SETTLE = 'receipt_settle';
 export const EVENT_PAYMENT_SETTLE = 'payment_settle';
 export const EVENT_RECEIPT_REVERSE = 'receipt_reverse';
+export const EVENT_SALES_SHIPMENT_COST = 'sales_cof_shipment';
+export const EVENT_MANUFACTURE_FINISH = 'manufacture_finish';
 
 export type VoucherDirection = 'd' | 'c';
 export interface VoucherLine {

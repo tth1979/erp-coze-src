@@ -2,9 +2,16 @@
 
 import Link from 'next/link';
 import { useAuth } from '@/components/auth/auth-provider';
-import { ClipboardCheck, History, PackageSearch } from 'lucide-react';
+import { ArrowUpFromLine, ClipboardCheck, History, PackageSearch } from 'lucide-react';
 
 const CARDS = [
+  {
+    href: '/m/pda/stock-io',
+    icon: ArrowUpFromLine,
+    title: '扫码出入库',
+    desc: '采购入库 / 销售出库 扫码核对明细',
+    accent: 'bg-rose-100 text-rose-700',
+  },
   {
     href: '/m/pda/scan-count',
     icon: ClipboardCheck,

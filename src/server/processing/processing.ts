@@ -8,6 +8,7 @@
  * 成本雏形：领料按原料移动加权均价结转（issued_cost），完工按未分摊成本分摊入产成品平均价。
  */
 import { getSupabaseClient } from '@/storage/database/supabase-client';
+import { onManufactureFinish } from '@/server/ledger/events';
 import { throwDbError, escapeOrKeyword, type ListQuery, type PagedResult } from '@/server/master-data/helpers';
 import { ApiError } from '@/server/http';
 import { nextDocNo } from '@/server/doc-no';
@@ -448,5 +449,16 @@ export async function finishManufacturing(
     p_user_id: user.id,
   });
   if (error) throwMaRpcError(error as { message?: string }, '加工完工');
-  return { allocated_cost: Number(data ?? 0) };
+  const allocated = Number(data ?? 0);
+  // 全部完工（completed）后生成加工成本结转凭证（幂等，event=订单）
+  const done = await supabase.from('ma_manufacturing_orders').select('status, doc_no, issued_cost').eq('id', id).maybeSingle();
+  if (!done.error && done.data && done.data.status === 'completed') {
+    await onManufactureFinish({
+      order_id: id,
+      doc_no: done.data.doc_no,
+      cost: Number(done.data.issued_cost ?? 0),
+      operatorId: user.id,
+    });
+  }
+  return { allocated_cost: allocated };
 }

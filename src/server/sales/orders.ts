@@ -16,7 +16,7 @@ import { ApiError } from '@/server/http';
 import { throwInventoryRpcError } from '@/server/inventory/shared';
 import { emptyToNull, escapeOrKeyword, throwDbError, type ListQuery, type PagedResult } from '@/server/master-data/helpers';
 import { getSupabaseClient } from '@/storage/database/supabase-client';
-import { onSalesShipment, fetchCustomerName } from '@/server/ledger/events';
+import { onSalesShipment, onSalesShipmentCost, fetchCustomerName } from '@/server/ledger/events';
 import type { SoSalesOrder, SoSalesOrderItem, SysUser } from '@/storage/database/shared/schema';
 
 // ---------------------------------------------------------------------------
@@ -475,8 +475,8 @@ export async function completeOrder(id: string, operatorId: string): Promise<{ s
   });
   if (error) throwInventoryRpcError(error, '销售发货');
   const shipmentNo = data as string;
-  // 一键发货也走终审出库，给该出库单生成确认收入凭证 + 销项税登记（幂等）
-  const sh = await getSupabaseClient().from('so_shipments').select('id, customer_id, shipment_no').eq('shipment_no', shipmentNo).maybeSingle();
+  // 一键发货也走终审出库，给该出库单生成确认收入+成本结转凭证 + 销项税登记（幂等）
+  const sh = await getSupabaseClient().from('so_shipments').select('id, customer_id, shipment_no, total_cost').eq('shipment_no', shipmentNo).maybeSingle();
   if (sh.data) {
     const items = await getSupabaseClient().from('so_shipment_items').select('product_id, quantity, unit_price').eq('shipment_id', sh.data.id);
     const customerName = await fetchCustomerName(sh.data.customer_id as string);
@@ -485,6 +485,12 @@ export async function completeOrder(id: string, operatorId: string): Promise<{ s
       shipment_no: shipmentNo,
       customer_name: customerName,
       items: (items.data ?? []).map((i) => ({ product_id: i.product_id, quantity: Number(i.quantity), unit_price: Number(i.unit_price) })),
+      operatorId,
+    });
+    await onSalesShipmentCost({
+      shipment_id: sh.data.id as string,
+      shipment_no: shipmentNo,
+      cost: Number(sh.data.total_cost ?? 0),
       operatorId,
     });
   }

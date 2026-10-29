@@ -14,7 +14,7 @@ import { nextDocNo } from '@/server/doc-no';
 import { ApiError } from '@/server/http';
 import { emptyToNull, escapeOrKeyword, throwDbError, type ListQuery, type PagedResult } from '@/server/master-data/helpers';
 import { getSupabaseClient } from '@/storage/database/supabase-client';
-import { onSalesShipment, fetchCustomerName } from '@/server/ledger/events';
+import { onSalesShipment, onSalesShipmentCost, fetchCustomerName } from '@/server/ledger/events';
 import type { SoShipment, SoShipmentItem, SysUser } from '@/storage/database/shared/schema';
 
 export interface ShipmentItemView {
@@ -332,6 +332,13 @@ export async function approveShipment(id: string, user: SysUser, comment?: strin
       shipment_no: view.shipment_no,
       customer_name: customerName,
       items: (view.items ?? []).map((i) => ({ product_id: i.product_id, quantity: Number(i.quantity), unit_price: Number(i.unit_price) })),
+      operatorId: user.id,
+    });
+    // 销售成本结转凭证（与收入凭证区分模板，幂等）
+    await onSalesShipmentCost({
+      shipment_id: id,
+      shipment_no: view.shipment_no,
+      cost: Number(view.total_cost ?? 0),
       operatorId: user.id,
     });
   }

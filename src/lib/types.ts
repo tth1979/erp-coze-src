@@ -598,6 +598,7 @@ export interface FinPayment {
 /** 应收/应付单行（物化：已出库销售订单 / 已入库采购订单） */
 export interface FinBillRow {
   bill_no: string;
+  order_id: string;
   partner_id: string;
   partner_name: string;
   bill_date: string;

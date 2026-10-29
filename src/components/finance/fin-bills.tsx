@@ -1,11 +1,14 @@
 'use client';
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { FileText, Search } from 'lucide-react';
 import { formatMoney } from '@/components/finance/balance-list';
+import { useAuth } from '@/components/auth/auth-provider';
+import { PaymentFormDialog } from '@/components/finance/payment-form-dialog';
 import { PaginationControls } from '@/components/master-data/pagination-controls';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
 import {
@@ -30,13 +33,38 @@ interface FinBillsProps {
   kind: 'receivable' | 'payable';
 }
 
-/** 应收/应付单（物化：已出库销售订单 / 已入库采购订单）明细表格 */
+/** 应收/应付单（物化：已出库销售订单 / 已入库采购订单）明细表格 + 按单核销 */
 export function FinBills({ kind }: FinBillsProps) {
   const isReceivable = kind === 'receivable';
   const endpoint = isReceivable ? '/api/fin/ar-bills' : '/api/fin/ap-bills';
   const [searchInput, setSearchInput] = useState('');
   const [status, setStatus] = useState('');
   const list = usePagedList<FinBillRow>(endpoint, 10, { status });
+  const { can } = useAuth();
+  const canWrite = can('fin.write');
+
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+
+  // 勾选待核销单（仅未结清单）
+  const openBills = useMemo(() => list.items.filter((b) => b.status === 'open'), [list.items]);
+  const selectedBills = openBills.filter((b) => selected.has(b.order_id));
+  const firstSelected = selectedBills[0] ?? null;
+  const selectedTotal = selectedBills.reduce((s, b) => s + b.outstanding, 0);
+
+  const [billDialog, setBillDialog] = useState<FinBillRow[] | null>(null);
+
+  function toggle(id: string): void {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function openReconcile(bills: FinBillRow[]): void {
+    setBillDialog(bills);
+  }
 
   const labels = isReceivable
     ? { title: '应收单（已出库销售订单）', partner: '客户', empty: '暂无应收单，销售出库后自动生成' }
@@ -47,7 +75,7 @@ export function FinBills({ kind }: FinBillsProps) {
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
           <h2 className="text-sm font-bold text-stone-900">{labels.title}</h2>
-          <p className="text-xs text-stone-500">往来核销明细可溯：余额 = 单据金额 − 已核销</p>
+          <p className="text-xs text-stone-500">按单核销：勾选待核销单，核销金额不可超出所选单余额</p>
         </div>
         <div className="flex items-center gap-2">
           <Select value={status || 'all'} onValueChange={(v) => setStatus(v === 'all' ? '' : v)}>
@@ -76,6 +104,23 @@ export function FinBills({ kind }: FinBillsProps) {
         </div>
       </div>
 
+      {/* 按单核销工具栏 */}
+      {canWrite && selectedBills.length > 0 && firstSelected && (
+        <div className="flex items-center justify-between rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2">
+          <p className="text-xs text-emerald-800">
+            已选 {selectedBills.length} 单（{firstSelected.partner_name}），可核销合计{' '}
+            <span className="font-semibold tabular-nums">¥{formatMoney(selectedTotal)}</span>
+          </p>
+          <Button
+            size="sm"
+            onClick={() => openReconcile([...selectedBills])}
+            className="bg-emerald-600 hover:bg-emerald-700"
+          >
+            按所选核销
+          </Button>
+        </div>
+      )}
+
       {list.loading ? (
         <div className="rounded-lg border border-stone-200 bg-white p-4">
           <Skeleton className="h-8 w-full" />
@@ -96,20 +141,32 @@ export function FinBills({ kind }: FinBillsProps) {
             {list.items.map((row) => (
               <div key={row.bill_no} className="rounded-lg border border-stone-200 bg-white p-3.5">
                 <div className="flex items-start justify-between gap-2">
-                  <div className="min-w-0">
-                    <div className="font-mono text-xs text-stone-500">{row.bill_no}</div>
-                    <div className="mt-0.5 truncate text-sm font-medium text-stone-900">{row.partner_name}</div>
+                  <div className="flex items-center gap-2">
+                    {canWrite && row.status === 'open' && (
+                      <Checkbox checked={selected.has(row.order_id)} onCheckedChange={() => toggle(row.order_id)} />
+                    )}
+                    <div className="min-w-0">
+                      <div className="font-mono text-xs text-stone-500">{row.bill_no}</div>
+                      <div className="mt-0.5 truncate text-sm font-medium text-stone-900">{row.partner_name}</div>
+                    </div>
                   </div>
-                  <Badge
-                    variant="outline"
-                    className={
-                      row.status === 'settled'
-                        ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
-                        : 'border-amber-200 bg-amber-50 text-amber-700'
-                    }
-                  >
-                    {row.status === 'settled' ? '已结清' : '未结清'}
-                  </Badge>
+                  <div className="flex items-center gap-2">
+                    <Badge
+                      variant="outline"
+                      className={
+                        row.status === 'settled'
+                          ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                          : 'border-amber-200 bg-amber-50 text-amber-700'
+                      }
+                    >
+                      {row.status === 'settled' ? '已结清' : '未结清'}
+                    </Badge>
+                    {canWrite && row.status === 'open' && (
+                      <Button size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => openReconcile([row])}>
+                        核销
+                      </Button>
+                    )}
+                  </div>
                 </div>
                 <dl className="mt-2 grid grid-cols-3 gap-2 text-xs">
                   <div>
@@ -141,6 +198,7 @@ export function FinBills({ kind }: FinBillsProps) {
             <Table>
               <TableHeader>
                 <TableRow>
+                  {canWrite && <TableHead className="w-10" />}
                   <TableHead>单据号</TableHead>
                   <TableHead>{labels.partner}</TableHead>
                   <TableHead>单据日期</TableHead>
@@ -148,11 +206,19 @@ export function FinBills({ kind }: FinBillsProps) {
                   <TableHead className="text-right">已核销</TableHead>
                   <TableHead className="text-right">余额</TableHead>
                   <TableHead>状态</TableHead>
+                  {canWrite && <TableHead className="w-16">操作</TableHead>}
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {list.items.map((row) => (
                   <TableRow key={row.bill_no}>
+                    {canWrite && (
+                      <TableCell>
+                        {row.status === 'open' && (
+                          <Checkbox checked={selected.has(row.order_id)} onCheckedChange={() => toggle(row.order_id)} />
+                        )}
+                      </TableCell>
+                    )}
                     <TableCell className="font-mono text-xs">{row.bill_no}</TableCell>
                     <TableCell className="font-medium">{row.partner_name}</TableCell>
                     <TableCell className="text-sm tabular-nums">{row.bill_date}</TableCell>
@@ -177,6 +243,15 @@ export function FinBills({ kind }: FinBillsProps) {
                         {row.status === 'settled' ? '已结清' : '未结清'}
                       </Badge>
                     </TableCell>
+                    {canWrite && (
+                      <TableCell>
+                        {row.status === 'open' && (
+                          <Button size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => openReconcile([row])}>
+                            核销
+                          </Button>
+                        )}
+                      </TableCell>
+                    )}
                   </TableRow>
                 ))}
               </TableBody>
@@ -185,6 +260,28 @@ export function FinBills({ kind }: FinBillsProps) {
 
           <PaginationControls page={list.page} pageSize={list.pageSize} total={list.total} onPageChange={list.setPage} />
         </>
+      )}
+
+      {billDialog && firstSelected && canWrite && (
+        <PaymentFormDialog
+          open
+          onOpenChange={(o) => {
+            if (!o) {
+              setBillDialog(null);
+              setSelected(new Set());
+              list.reload();
+            }
+          }}
+          kind={isReceivable ? 'receipt' : 'payment'}
+          partner={{ id: firstSelected.partner_id, code: '', name: firstSelected.partner_name }}
+          outstanding={list.items.filter((b) => b.partner_id === firstSelected.partner_id).reduce((s, b) => s + b.outstanding, 0)}
+          bills={billDialog}
+          onSaved={() => {
+            setBillDialog(null);
+            setSelected(new Set());
+            list.reload();
+          }}
+        />
       )}
     </div>
   );

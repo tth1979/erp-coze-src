@@ -9,6 +9,100 @@ import { getSupabaseClient } from "@/storage/database/supabase-client";
 export const TAX_OUTPUT = 'output';
 export const TAX_INPUT = 'input';
 
+export interface TaxFilingRow {
+  rate: string;
+  output_base: number;
+  output_tax: number;
+  input_base: number;
+  input_tax: number;
+}
+export interface TaxFilingView {
+  period: string;
+  output_amount: number;
+  output_base: number;
+  output_tax: number;
+  input_amount: number;
+  input_base: number;
+  input_tax: number;
+  /** 可抵扣进项税（雏形：默认全部进项可抵扣） */
+  deductible_input: number;
+  /** 应纳增值税 = 销项 − 可抵扣进项（≥0） */
+  vat_payable: number;
+  /** 留抵税额 = 可抵扣进项 − 销项（≥0） */
+  carried_forward: number;
+  rows: TaxFilingRow[];
+}
+
+const num = (v: unknown): number => Number(v ?? 0);
+
+/** 增值税纳税申报主表数据来源（雏形）：按期间汇总销项/进项税并计算应纳与留抵 */
+export async function getTaxFiling(period: string): Promise<TaxFilingView> {
+  const supabase = getSupabaseClient();
+  const { data, error } = await supabase
+    .from('tax_entries')
+    .select('*')
+    .eq('period', period);
+  if (error) throw new ApiError(500, 'DB', error.message);
+
+  const rows = new Map<string, TaxFilingRow>();
+  let output_amount = 0;
+  let output_base = 0;
+  let output_tax = 0;
+  let input_amount = 0;
+  let input_base = 0;
+  let input_tax = 0;
+
+  for (const r of data ?? []) {
+    const t = r as Record<string, unknown>;
+    const isOut = t.tax_type === TAX_OUTPUT;
+    const amount = num(t.amount);
+    const base = num(t.base_amount);
+    const tax = num(t.tax_amount);
+    if (isOut) {
+      output_amount += amount;
+      output_base += base;
+      output_tax += tax;
+    } else {
+      input_amount += amount;
+      input_base += base;
+      input_tax += tax;
+    }
+    const rate = String(t.tax_rate ?? 13);
+    let row = rows.get(rate);
+    if (!row) {
+      row = { rate, output_base: 0, output_tax: 0, input_base: 0, input_tax: 0 };
+      rows.set(rate, row);
+    }
+    if (isOut) {
+      row.output_base += base;
+      row.output_tax += tax;
+    } else {
+      row.input_base += base;
+      row.input_tax += tax;
+    }
+  }
+
+  const deductible = round2(input_tax);
+  const diff = round2(output_tax - deductible);
+  return {
+    period,
+    output_amount: round2(output_amount),
+    output_base: round2(output_base),
+    output_tax: round2(output_tax),
+    input_amount: round2(input_amount),
+    input_base: round2(input_base),
+    input_tax: round2(input_tax),
+    deductible_input: deductible,
+    vat_payable: Math.max(diff, 0),
+    carried_forward: Math.max(-diff, 0),
+    rows: [...rows.values()],
+  };
+}
+
+export function round2(n: number): number {
+  return Math.round(n * 100) / 100;
+}
+
 export interface TaxEntryInput {
   tax_type: string;
   period: string;

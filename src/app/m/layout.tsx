@@ -3,13 +3,14 @@
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useEffect } from 'react';
-import { ClipboardCheck, Home, History, PackageSearch } from 'lucide-react';
+import { ArrowUpFromLine, ClipboardCheck, Home, History, PackageSearch } from 'lucide-react';
 import { useAuth } from '@/components/auth/auth-provider';
 import { cn } from '@/lib/utils';
 
 const NAV = [
   { href: '/m/pda', label: '首页', icon: Home },
   { href: '/m/pda/inventory', label: '查余额', icon: PackageSearch },
+  { href: '/m/pda/stock-io', label: '出入库', icon: ArrowUpFromLine },
   { href: '/m/pda/scan-count', label: '盘点', icon: ClipboardCheck },
   { href: '/m/pda/movements', label: '流向', icon: History },
 ];
@@ -61,7 +62,7 @@ export default function MobileLayout({ children }: { children: React.ReactNode }
 
       {/* 底部导航 */}
       <nav className="fixed inset-x-0 bottom-0 z-20 border-t border-stone-200 bg-white">
-        <div className="mx-auto grid max-w-3xl grid-cols-4">
+        <div className="mx-auto grid max-w-3xl grid-cols-5">
           {NAV.map(({ href, label, icon: Icon }) => {
             const active = pathname === href || (href !== '/m/pda' && pathname.startsWith(`${href}/`));
             return (

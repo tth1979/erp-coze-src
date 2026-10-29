@@ -796,6 +796,8 @@ export async function cancelPayment(id: string, operatorId: string): Promise<Pay
 export interface FinBillRow {
   /** 应收/应付单号（=来源销售/采购订单号） */
   bill_no: string;
+  /** 来源订单 id（核销时回填收款/付款单 order_id，多单核销按此关联） */
+  order_id: string;
   partner_id: string;
   partner_name: string;
   bill_date: string;
@@ -868,6 +870,7 @@ async function listBills(direction: PaymentDirection, query: BillListQuery): Pro
     const outstanding = round2(amount - settledMapAmt);
     return {
       bill_no: (r.order_no as string) ?? '',
+      order_id: (r.id as string) ?? '',
       partner_id: (r[partnerCol] as string) ?? '',
       partner_name: nameMap.get(r[partnerCol] as string) ?? '-',
       bill_date: (r.order_date as string) ?? '',

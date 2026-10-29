@@ -5,7 +5,7 @@
  */
 import { getSupabaseClient } from "@/storage/database/supabase-client";
 import { ApiError } from "@/server/http";
-import { ensureVoucher, splitAmountWithRate, round2, EVENT_SALES_SHIPMENT, EVENT_PURCHASE_RECEIPT, EVENT_RECEIPT_SETTLE, EVENT_PAYMENT_SETTLE, EVENT_RECEIPT_REVERSE } from "@/server/ledger/ledger";
+import { ensureVoucher, splitAmountWithRate, round2, EVENT_SALES_SHIPMENT, EVENT_PURCHASE_RECEIPT, EVENT_RECEIPT_SETTLE, EVENT_PAYMENT_SETTLE, EVENT_RECEIPT_REVERSE, EVENT_SALES_SHIPMENT_COST, EVENT_MANUFACTURE_FINISH } from "@/server/ledger/ledger";
 import { registerTaxEntry, TAX_OUTPUT, TAX_INPUT } from "@/server/tax/tax";
 
 export interface ItemAmount {
@@ -173,6 +173,46 @@ export async function onPaymentSettle(args: {
     ref_summary: `付款核销：${args.partner}`,
     template_code: 'PAYMENT_SETTLE',
     ctx: { amount: args.amount },
+    operatorId: args.operatorId,
+  });
+}
+
+/** 销售出库成本结转：借主营成本，贷库存商品（与确认收入凭证区分模板，同 event_id 幂等） */
+export async function onSalesShipmentCost(args: {
+  shipment_id: string;
+  shipment_no: string;
+  cost: number;
+  operatorId: string;
+  date?: string;
+}) {
+  await ensureVoucher({
+    event_type: EVENT_SALES_SHIPMENT_COST,
+    event_id: args.shipment_id,
+    voucher_date: args.date ?? todayStr(),
+    ref_no: args.shipment_no,
+    ref_summary: `销售成本结转：${args.shipment_no}`,
+    template_code: 'SALES_SHIPMENT_COST',
+    ctx: { amount: args.cost },
+    operatorId: args.operatorId,
+  });
+}
+
+/** 加工完工成本结转：借库存产成品，贷加工成本归集（差额按损耗处理）。仅在加工单全部完工后记账，幂等。 */
+export async function onManufactureFinish(args: {
+  order_id: string;
+  doc_no: string;
+  cost: number;
+  operatorId: string;
+  date?: string;
+}) {
+  await ensureVoucher({
+    event_type: EVENT_MANUFACTURE_FINISH,
+    event_id: args.order_id,
+    voucher_date: args.date ?? todayStr(),
+    ref_no: args.doc_no,
+    ref_summary: `加工完工成本结转：${args.doc_no}`,
+    template_code: 'MANUFACTURE_FINISH',
+    ctx: { amount: args.cost },
     operatorId: args.operatorId,
   });
 }

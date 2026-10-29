@@ -22,6 +22,7 @@ import {
   Package,
   PackageCheck,
   PackageOpen,
+  FileBarChart,
   Percent,
   Receipt,
   RotateCcw,
@@ -118,6 +119,7 @@ const NAV: NavGroup[] = [
       { title: '收付款流水', href: '/finance/payments', icon: ClipboardList, permission: 'fin.read' },
       { title: '记账凭证', href: '/finance/vouchers', icon: BookOpenCheck, permission: 'fin.read' },
       { title: '税额统计', href: '/tax/taxes', icon: Percent, permission: 'fin.read' },
+      { title: '纳税申报', href: '/tax/filing', icon: FileBarChart, permission: 'fin.read' },
     ],
   },
   {
