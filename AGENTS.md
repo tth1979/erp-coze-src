@@ -144,9 +144,15 @@
 | POST | /api/fin/payments/[id]/cancel | fin.write | 作废付款单（仅 pending） |
 | GET | /api/fin/ap-bills | fin.read | 应付单列表（已入库采购订单物化，含 settles/余额/状态，keyword+status） |
 | DELETE | /api/fin/payments/[id] | fin.write | 删除付款单（仅 pending） |
-| GET | /api/fin/vouchers | fin.read | 记账凭证分页（status/voucher_date_from/to/keyword/event_type 过滤，含明细行） |
+| GET | /api/fin/vouchers | fin.read | 记账凭证分页（status/voucher_date_from/to/keyword/event_type/period/account_code 过滤，含明细行） |
+| POST | /api/fin/vouchers | fin.write | 手工记账：登记平衡草稿 `{voucher_date, ref_summary, lines:[{direction,account_code,amount,summary}]}`（借贷必相等、科目须为末级） |
 | GET / DELETE | /api/fin/vouchers/[id] | fin.read / fin.write | 凭证详情（含借贷行）/ 删除（仅未过账：status=draft，无红冲凭证） |
+| POST | /api/fin/vouchers/[id]/post | fin.write | 过账：draft→posted，记录 changed_by/at（仅 draft） |
 | POST | /api/fin/vouchers/[id]/void | fin.write | 红字冲销（红冲冗余：原凭证→void 并生成等额反号红冲凭证，禁对已作废/已冲销重复红冲） |
+| GET/POST | /api/fin/subjects | fin.read / fin.write | 会计科目字典：分页（keyword/category/status）+ 新增（编码唯一409，末级自动） |
+| GET/PUT/DELETE | /api/fin/subjects/[id] | fin.read / fin.write | 科目详情 / 更新（含期初、父级、可停用）/ 删除（有分录引用/子级/期初余额不可删，可停用） |
+| GET | /api/fin/balances?period=YYYY-MM | fin.read | 科目余额表：按期初+本期借/贷+期末实时聚合，父级自动汇总子级 |
+| GET | /api/fin/trial-balance?period=YYYY-MM | fin.read | 试算平衡表：以实际分录发生额为口径（红字符号相抵），借贷必等 + 差额定位 |
 | GET | /api/tax/entries | fin.read | 税额登记分页（tax_type/period/keyword = 单号模糊） |
 | GET | /api/tax/summary | fin.read | 期间×税率税额统计（销项/进项 金额·计税基数·税额，内存聚合） |
 | GET | /api/tax/filing?period=YYYY-MM | fin.read | 增值税纳税申报主表数据来源：按期间销项/进项 + vat_payable/carried_forward（留抵） |
@@ -239,7 +245,14 @@
 - **权限**：凭证与税务读 `fin.read`（staff 只读）、红冲/删除/税额写 `fin.write`（manager）。
 - **前端**：`/finance/vouchers`（凭证列表：日期/状态筛选、查看借贷行明细、行内红冲）、`/tax/taxes`（期间×税率税额汇总 + 登记明细）；导航「财务→记账凭证、税务→税额统计」。
 
-### 收尾增强（成本结转 / 税申报 / 按单核销 / PDA 出入库，0013）
+### 会计科目 + 凭证管理增强（fin_subjects，0015）
+
+- **迁移 0015_account.sql**（独立文件，幂等种子）：建 `fin_subjects` 科目字典（`subject_code` 唯一、`category` 1资产/2负债/3共同/4权益/5成本/6损益、`parent_code` 层级、`direction` 0借1贷、`is_leaf` 末级、`balance_flag` 是否参与余额表、`opening_amount/opening_direction` 期初、`status` active/disabled、`sort_no`），RLS 开启；种子预置 28 个常用科目（含 2221 应交税费 非末级→22210101/22210102 末级进/销项、5011 生产成本 非末级→5101 加工归集 末级，与 0013 成本模板科目对齐）。
+- **科目字典即唯一账务来源**：凭证分录 account_code 与余额表均以 `fin_subjects` 为准；非末级（is_leaf=false）科目**不可直接用于凭证分录**（服务端强制校验，记账 400）。服务端 `src/server/finance/subjects.ts`（CRUD + 账面）+ `leaf-guard.ts`（`ensureLeafCodes` 检索末级科目做记账校验）。
+- **删除保护**：科目被凭证分录引用 / 有子级 / 已配期初余额 → 不可删（400 `FIN.SUBJECT_REFERENCED/HAS_CHILDREN/HAS_BALANCE`），可 `status=disabled` 停用；编码重复 409。
+- **手工记账 + 过账**：`POST /api/fin/vouchers` 登记平衡草稿（draft，借方合计=贷方合计、仅末级科目），`POST ...[id]/post` draft→posted（仅 draft），`void` 对草稿直接作废、对已过账红字冲销；`DELETE` 仅 draft。前端 `/finance/vouchers` 增 period/科目筛选 + 手工记账对话框 + 行内 过账/红冲/作废/删除。
+- **科目余额表 / 试算平衡**：`src/server/finance/subjects.ts#getSubjectBalances(period)` 按期间实时聚合 期初+本期借/贷+期末（父级自动汇总子级，方向符号：正=借 负=贷）；`#getTrialBalance(period)` 以**实际分录发生额**为口径（含红字符号相抵），借贷必等，不平衡展示差额定位。调试口径由 `src/server/ledger/balance-math.ts`（`computeClosing`/`sumTrial`/`round2`）纯函数支撑，金标准 `scripts/ledger-golden.ts` 已加用例。
+- **前端页面**：`/finance/subjects`（科目字典：类别分组/树表/增删改/期初/启停）、`/finance/balances`（余额表，期间选择）、`/finance/trial-balance`（试算平衡，期间选择，借贷合计+平衡标识+差额）；导航「财务→会计科目/资金模块→记账凭证·科目余额·试算平衡」。
 
 - **成本结转两套模板（迁移 0013，幂等种子）**：`MANUFACTURE_FINISH`（event=manufacture_finish，借 1405 库存商品 `#amount` / 贷 5101 生产成本—加工归集 `#amount`）与 `SALES_SHIPMENT_COST`（event=sales_cof_shipment，借 6401 主营业务成本 `#amount` / 贷 1405 库存商品 `#amount`）；均 `balance_to=6601 管理费用`。`src/server/ledger/events.ts` 新增 `onSalesShipmentCost` / `onManufactureFinish`（按 (event_type,event_id) 幂等）。
 - **接入点**：`sales/shipments.ts#approveShipment` 与 `sales/orders.ts#completeOrder`（一键发货）终审出库后生成销售成本凭证（cost=单头 `total_cost`）；`processing.ts#finishManufacturing` 在加工单 →completed 后生成加工完工成本凭证（cost=`issued_cost` 投入成本，差额按损耗处理）。

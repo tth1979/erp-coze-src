@@ -5,6 +5,7 @@
  * 纯函数测试，不依赖数据库。
  */
 import { buildVoucherEntries, round2, splitAmountWithRate, type TemplateRow } from '../src/server/ledger/ledger';
+import { computeClosing, sumTrial } from '../src/server/ledger/balance-math';
 
 type Template = Pick<TemplateRow, 'template_code' | 'event_type' | 'spec' | 'balance_to'>;
 
@@ -184,6 +185,36 @@ console.log('\n— 销售出库成本结转 —');
   assert('借：主营业务成本 2880.5', amt(out.lines[0]) === 2880.5);
   assert('贷：库存商品 2880.5', amt(out.lines[1]) === 2880.5);
   assert('成本模板与收入模板 event_type 不同', SALES_SHIPMENT_COST.event_type !== SALES_SHIPMENT.event_type);
+}
+
+// 9. 科目余额：期末 = 期初(带符号) + (本期借 − 本期贷)
+console.log('\n— 科目余额表计算 —');
+{
+  // 资产科目（借方方向）：期初借 1000，本期借 500、贷 300 → 期末借 1200
+  assert('期末=期初+借-贷(借余)', computeClosing(1000, 500, 300) === 1200);
+  // 负债科目（贷方方向）：期初贷 800（记作 -800），本期借 200、贷 100 → 期末贷 700
+  assert('期末=期初+借-贷(贷余)', computeClosing(-800, 200, 100) === -700);
+  // 冲销至反向：期初借 100，本期贷 250 → 期末贷 150
+  assert('余额转方向', computeClosing(100, 0, 250) === -150);
+  // 四舍五入
+  assert('期末四舍五入', computeClosing(0.005, 0.004, 0) === 0.01);
+}
+
+// 10. 试算平衡：借贷合计必等 / 差额定位
+console.log('\n— 试算平衡汇总 —');
+{
+  const t = sumTrial([
+    { debit: 1130, credit: 0 },
+    { debit: 0, credit: 1000 },
+    { debit: 0, credit: 130 },
+  ]);
+  assert('借贷合计相等', t.balanced && t.total_debit === t.total_credit && t.total_debit === 1130);
+  assert('差额为0', t.diff === 0);
+  const u = sumTrial([
+    { debit: 500, credit: 0 },
+    { debit: 0, credit: 480 },
+  ]);
+  assert('不平衡差额20', !u.balanced && u.diff === 20 && u.total_debit === 500 && u.total_credit === 480);
 }
 
 console.log(`\n${passed} passed, ${failures} failed`);

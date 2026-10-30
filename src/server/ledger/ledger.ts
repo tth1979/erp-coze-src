@@ -7,6 +7,7 @@
  */
 import { ApiError } from "@/server/http";
 import { getSupabaseClient } from "@/storage/database/supabase-client";
+import { ensureLeafCodes } from "@/server/finance/leaf-guard";
 
 export const EVENT_SALES_SHIPMENT = 'sales_shipment';
 export const EVENT_PURCHASE_RECEIPT = 'purchase_receipt';
@@ -300,6 +301,19 @@ export interface VoucherListQuery {
   event_type?: string;
   from?: string;
   to?: string;
+  /** 会计期间 YYYY-MM */
+  period?: string;
+  /** 按分录科目编码过滤 */
+  account_code?: string;
+}
+
+function periodRangeForQuery(period: string): { from: string; to: string } {
+  const m = /^(\d{4})-(\d{2})$/.exec(period);
+  if (!m) throw new ApiError(400, 'LEDGER.BAD_PERIOD', '期间格式应为 YYYY-MM');
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  const lastDay = new Date(y, mo, 0).getDate();
+  return { from: `${period}-01`, to: `${period}-${String(lastDay).padStart(2, '0')}` };
 }
 
 export async function listVouchers(query: VoucherListQuery = {}): Promise<{
@@ -316,7 +330,22 @@ export async function listVouchers(query: VoucherListQuery = {}): Promise<{
   if (query.event_type) q = q.eq('event_type', query.event_type);
   if (query.from) q = q.gte('voucher_date', query.from);
   if (query.to) q = q.lte('voucher_date', query.to);
+  if (query.period) {
+    const { from, to } = periodRangeForQuery(query.period);
+    q = q.gte('voucher_date', from).lte('voucher_date', to);
+  }
   if (query.keyword) q = q.or(`voucher_no.ilike.%${query.keyword}%,ref_no.ilike.%${query.keyword}%,ref_summary.ilike.%${query.keyword}%`);
+  // 按分录科目过滤：先查含该科目的凭证 id 集合，再 in 过滤
+  if (query.account_code) {
+    const { data: hitLines, error: hitErr } = await supabase
+      .from('fin_voucher_lines')
+      .select('voucher_id')
+      .eq('account_code', query.account_code);
+    if (hitErr) throw new ApiError(500, 'DB', hitErr.message);
+    const ids = (hitLines ?? []).map((l) => l.voucher_id as string);
+    if (ids.length === 0) return { items: [], total: 0, page, page_size: pageSize };
+    q = q.in('id', ids);
+  }
   const { data, error, count } = await q
     .order('voucher_date', { ascending: false })
     .order('voucher_no', { ascending: false })
@@ -416,5 +445,86 @@ export async function voidVoucher(id: string, user: { id: string }, reason: stri
     .update({ status: 'void', void_of_no: voucherNo, void_by: user.id, void_at: new Date().toISOString(), void_remark: reason || null })
     .eq('id', id);
   if (updErr) throw new ApiError(500, 'DB', updErr.message);
+  return getVoucher(id);
+}
+
+export interface ManualVoucherLineInput {
+  direction: 'd' | 'c';
+  account_code: string;
+  summary?: string;
+  amount: number;
+}
+
+/**
+ * 手工凭证（草稿）：录入借贷分录，校验借贷平衡 + 科目均末级且启用。
+ * 生成 draft 状态凭证，待过账。
+ */
+export async function createManualDraftVoucher(
+  input: { voucher_date: string; ref_summary?: string; lines: ManualVoucherLineInput[] },
+  operator: { id: string },
+): Promise<VoucherView> {
+  const supabase = getSupabaseClient();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(input.voucher_date)) throw new ApiError(400, 'LEDGER.BAD_DATE', '凭证日期格式应为 YYYY-MM-DD');
+  if (!input.lines || input.lines.length < 2) throw new ApiError(400, 'LEDGER.INVALID_LINES', '凭证至少需要两条分录');
+  for (const l of input.lines) {
+    if (l.amount == null || !(l.amount > 0)) throw new ApiError(400, 'LEDGER.INVALID_AMOUNT', '分录金额必须大于0');
+    if (!l.account_code) throw new ApiError(400, 'LEDGER.INVALID_ACCOUNT', '分录缺少科目编码');
+  }
+  await ensureLeafCodes(input.lines.map((l) => l.account_code));
+  const sumD = round2(input.lines.filter((l) => l.direction === 'd').reduce((a, l) => a + l.amount, 0));
+  const sumC = round2(input.lines.filter((l) => l.direction === 'c').reduce((a, l) => a + l.amount, 0));
+  if (Math.abs(sumD - sumC) > 0.01) throw new ApiError(400, 'LEDGER.UNBALANCED', `凭证借贷不平衡（借 ${sumD} ≠ 贷 ${sumC}）`);
+  const voucherNo = await nextVoucherNo(input.voucher_date);
+  const { data, error } = await supabase
+    .from('fin_vouchers')
+    .insert({
+      voucher_no: voucherNo,
+      voucher_date: input.voucher_date,
+      event_type: 'manual',
+      event_id: voucherNo,
+      ref_no: null,
+      ref_summary: input.ref_summary || null,
+      template_code: 'MANUAL',
+      total_debit: String(sumD),
+      total_credit: String(sumC),
+      status: 'draft',
+      source: 'manual',
+      created_by: operator.id,
+    })
+    .select()
+    .maybeSingle();
+  if (error) throw new ApiError(500, 'DB', error.message);
+  const vId = (data as Record<string, unknown>).id as string;
+  const lines: VoucherLineDB[] = input.lines.map((l, i) => ({
+    line_no: i + 1,
+    direction: l.direction,
+    account_code: l.account_code,
+    account_name: '',
+    amount: l.amount.toFixed(2),
+    summary: l.summary || null,
+  }));
+  // 补科目名称
+  const codes = [...new Set(lines.map((l) => l.account_code))];
+  const { data: subs, error: subErr } = await supabase.from('fin_subjects').select('subject_code, subject_name').in('subject_code', codes);
+  if (subErr) throw new ApiError(500, 'DB', subErr.message);
+  const nameMap = new Map((subs ?? []).map((s) => [s.subject_code, s.subject_name]));
+  lines.forEach((l) => {
+    if (!l.account_name) l.account_name = (nameMap.get(l.account_code) as string) ?? l.account_code;
+  });
+  const { error: lineErr } = await supabase.from('fin_voucher_lines').insert(lines.map((l) => ({ ...l, voucher_id: vId })));
+  if (lineErr) throw new ApiError(500, 'DB', `分录写入失败：${lineErr.message}`);
+  return getVoucher(vId);
+}
+
+/** 手工凭证过账：draft → posted（锁定，后续需红冲） */
+export async function postVoucher(id: string, operator: { id: string }): Promise<VoucherView> {
+  const supabase = getSupabaseClient();
+  const v = await getVoucher(id);
+  if (v.status !== 'draft') throw new ApiError(400, 'LEDGER.BAD_TRANSITION', '仅草稿凭证可过账');
+  const { error } = await supabase
+    .from('fin_vouchers')
+    .update({ status: 'posted', posted_by: operator.id, posted_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+    .eq('id', id);
+  if (error) throw new ApiError(500, 'DB', error.message);
   return getVoucher(id);
 }
