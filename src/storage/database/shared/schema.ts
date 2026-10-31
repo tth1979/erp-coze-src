@@ -38,6 +38,8 @@ export const sysUsers = pgTable(
     role: varchar("role", { length: 32 }).notNull().default("staff"),
     /** 状态：active | disabled */
     status: varchar("status", { length: 20 }).notNull().default("active"),
+    /** 部门（数据级"本部门"范围归属依据，0020 新增） */
+    dept: varchar("dept", { length: 64 }),
     created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     updated_at: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
   },

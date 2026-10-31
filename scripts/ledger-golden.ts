@@ -10,6 +10,15 @@ import { matchStatements, reconcile, netBalance, type ReconLine } from '../src/s
 import { classifyActivity, sumActivities, directNetChange, reconcileIndirect, type CashMovement } from '../src/server/finance/cashflow-math';
 import { straightLineMonthly, periodDepreciation, netValue, buildDisposalLines } from '../src/server/finance/fixed-assets-math';
 import { invoiceTotal, taxFromExcl, socDiffAmount, computeWorksheet } from '../src/server/tax/tax-math';
+import {
+  hasEffectivePermission,
+  hasPermission,
+  listPermissions,
+  maskSensitiveFields,
+  mergeScope,
+  PERMISSION_CATALOG,
+} from '../src/server/auth/permissions';
+import { validateValueByType } from '../src/server/system/settings';
 
 type Template = Pick<TemplateRow, 'template_code' | 'event_type' | 'spec' | 'balance_to'>;
 
@@ -95,6 +104,16 @@ function assert(name: string, cond: boolean, detail?: string) {
   } else {
     failures++;
     console.log(`FAIL  ${name}${detail ? ' — ' + detail : ''}`);
+  }
+}
+function assertThrowsApi(name: string, fn: () => void) {
+  try {
+    fn();
+    failures++;
+    console.log(`FAIL  ${name} — 未抛错`);
+  } catch {
+    passed++;
+    console.log(`PASS  ${name}`);
   }
 }
 function blob(name: string, template: Template, ctx: { amount: number; excl?: number; tax?: number; est?: number; neg_est?: number }) {
@@ -413,6 +432,80 @@ console.log('\n— 税务增强 —');
   const w3 = computeWorksheet({ output_tax: 1000, deductible_input: 1800, prepaid_total: 0 });
   assert('进>销 应纳 0', w3.vat_before_prepaid === 0);
   assert('进>销 留抵 800', w3.carried_forward === 800);
+}
+
+// 20. 系统管理：四粒度权限合并 / 数据范围 / 字段脱敏 / 参数值校验 / 权限目录完整性
+console.log('\n— 系统管理 —');
+{
+  // 内置角色静态映射：admin 通配、manager 读写+审批、staff 只读
+  assert('admin 通配权限 *', hasPermission('admin', 'sys.write'));
+  assert('manager 有 sys.write', hasPermission('manager', 'sys.write'));
+  assert('manager 有字段级 field.cost_price', hasPermission('manager', 'field.cost_price'));
+  assert('manager 有字段级 field.customer_phone', hasPermission('manager', 'field.customer_phone'));
+  assert('staff 无写权限', !hasPermission('staff', 'md.write'));
+  assert('staff 无 sys.write', !hasPermission('staff', 'sys.write'));
+  assert('staff 无字段级权限', !hasPermission('staff', 'field.cost_price'));
+  assert('staff 有只读 md.read', hasPermission('staff', 'md.read'));
+
+  // 有效权限判定（自定义角色并集后的判定口径）
+  assert('通配 * 命中任意点', hasEffectivePermission(['*'], 'po.approve'));
+  const merged = [...listPermissions('staff'), 'po.write', 'po.approve'];
+  assert('并集命中自定义点 po.write', hasEffectivePermission(merged, 'po.write'));
+  assert('并集保留内置点 md.read', hasEffectivePermission(merged, 'md.read'));
+  assert('并集不命中未授权点 fin.write', !hasEffectivePermission(merged, 'fin.write'));
+
+  // 数据范围合并：多角色取最严格（self > dept > all）
+  assert('all+dept=dept', mergeScope('all', 'dept') === 'dept');
+  assert('dept+all=dept', mergeScope('dept', 'all') === 'dept');
+  assert('dept+self=self', mergeScope('dept', 'self') === 'self');
+  assert('self+self=self', mergeScope('self', 'self') === 'self');
+  assert('all+all=all', mergeScope('all', 'all') === 'all');
+
+  // 字段级脱敏：缺 field.cost_price 时成本价/毛利率置 null
+  const maskedCost = maskSensitiveFields(
+    [{ id: 'p1', name: '瓷砖', reference_purchase_price: 88.5, avg_cost: 80 }],
+    ['md.read'],
+  );
+  assert('无成本权限→成本价置 null', maskedCost[0].reference_purchase_price === null);
+  assert('无成本权限→均价置 null', maskedCost[0].avg_cost === null);
+  assert('脱敏保留非敏感字段', maskedCost[0].name === '瓷砖');
+  const keepCost = maskSensitiveFields(
+    [{ id: 'p1', reference_purchase_price: 88.5 }],
+    ['md.read', 'field.cost_price'],
+  );
+  assert('有成本权限→成本价保留', keepCost[0].reference_purchase_price === 88.5);
+  // 客户手机号脱敏
+  const maskedPhone = maskSensitiveFields([{ id: 'c1', name: '张三', phone: '13800000000' }], ['md.read']);
+  assert('无手机号权限→phone 置 null', maskedPhone[0].phone === null);
+  const keepPhone = maskSensitiveFields(
+    [{ id: 'c1', phone: '13800000000' }],
+    ['md.read', 'field.customer_phone'],
+  );
+  assert('有手机号权限→phone 保留', keepPhone[0].phone === '13800000000');
+  // admin 通配不脱敏
+  const adminRows = maskSensitiveFields([{ id: 'p1', reference_purchase_price: 88.5, phone: '1' }], ['*']);
+  assert('admin 通配不脱敏', adminRows[0].reference_purchase_price === 88.5 && adminRows[0].phone === '1');
+
+  // 参数中心：值类型校验
+  assertThrowsApi('数值类型拒绝非数字', () => validateValueByType('abc', 'number'));
+  assertThrowsApi('布尔类型拒绝非法值', () => validateValueByType('yes', 'boolean'));
+  assertThrowsApi('JSON 类型拒绝非法 JSON', () => validateValueByType('{bad', 'json'));
+  validateValueByType('1000', 'number');
+  validateValueByType('true', 'boolean');
+  validateValueByType('{"a":1}', 'json');
+  validateValueByType('任意文本', 'string');
+  assert('参数值类型校验通过样例不抛错', true);
+
+  // 权限目录：覆盖四粒度 + 全部内置角色权限点可溯源
+  const catalogKeys = new Set(PERMISSION_CATALOG.map((c) => c.key));
+  assert('目录含字段级点', catalogKeys.has('field.cost_price') && catalogKeys.has('field.customer_phone'));
+  assert('目录含系统管理点', catalogKeys.has('sys.read') && catalogKeys.has('sys.write'));
+  for (const p of listPermissions('manager')) {
+    assert(`manager 内置点 ${p} 在目录中`, catalogKeys.has(p));
+  }
+  for (const p of listPermissions('staff')) {
+    assert(`staff 内置点 ${p} 在目录中`, catalogKeys.has(p));
+  }
 }
 
 console.log(`\n${passed} passed, ${failures} failed`);

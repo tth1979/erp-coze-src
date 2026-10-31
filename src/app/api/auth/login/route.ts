@@ -6,6 +6,7 @@ import { issueSession, SESSION_COOKIE } from '@/server/auth/session';
 import { verifyPassword } from '@/server/auth/password';
 import { ensureBootstrapAdmin } from '@/server/auth/bootstrap';
 import { listPermissions } from '@/server/auth/permissions';
+import { clientIp, writeAuditLog } from '@/server/system/audit';
 import { fail, handleError, ok } from '@/server/http';
 
 const isDev = process.env.COZE_PROJECT_ENV === 'DEV';
@@ -87,6 +88,16 @@ export async function POST(request: NextRequest) {
     const { token, expiresAt } = await issueSession(user.id, {
       userAgent: request.headers.get('user-agent') ?? undefined,
       ip: request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? undefined,
+    });
+
+    // 审计：登录成功
+    await writeAuditLog({
+      userId: user.id,
+      username: user.username,
+      action: 'auth.login',
+      resource: 'auth',
+      resourceId: user.id,
+      ip: clientIp(request),
     });
 
     const response = ok({

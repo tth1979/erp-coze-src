@@ -1,7 +1,8 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
 import { fail, handleError, ok } from '@/server/http';
-import { requireAuth, requirePermission } from '@/server/auth/guard';
+import { dataScopeOf, requireAuth, requirePermission } from '@/server/auth/guard';
+import { dataScopeUserIds } from '@/server/auth/permissions';
 import { listExpenses, createExpense, type ClaimCreateInput } from '@/server/finance/expenses';
 import { parseListQuery } from '@/server/master-data/helpers';
 
@@ -11,9 +12,12 @@ export async function GET(req: NextRequest) {
     requirePermission(user, 'fin.read');
     const params = req.nextUrl.searchParams;
     const query = parseListQuery(params);
+    // 数据级权限：dept/self 范围限定可见操作人
+    const createdByIds = await dataScopeUserIds(user, dataScopeOf(user));
     const result = await listExpenses(query, {
       status: params.get('status') || undefined,
       period: params.get('period') || undefined,
+      createdByIds,
     });
     return ok(result);
   } catch (error) {

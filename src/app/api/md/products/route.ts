@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
-import { requireAuth, requirePermission } from '@/server/auth/guard';
+import { effectivePermissionsOf, requireAuth, requirePermission } from '@/server/auth/guard';
+import { maskSensitiveFields } from '@/server/auth/permissions';
 import { fail, handleError, ok } from '@/server/http';
 import { parseListQuery } from '@/server/master-data/helpers';
 import { createProduct, listProducts } from '@/server/master-data/products';
@@ -30,7 +31,8 @@ export async function GET(request: NextRequest) {
     const { user } = await requireAuth(request);
     requirePermission(user, 'md.read');
     const result = await listProducts(parseListQuery(request.nextUrl.searchParams));
-    return ok(result);
+    // 字段级权限：无 field.cost_price 时成本价置 null
+    return ok({ ...result, items: maskSensitiveFields(result.items, effectivePermissionsOf(user)) });
   } catch (error) {
     return handleError(error);
   }

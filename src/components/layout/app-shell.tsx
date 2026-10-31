@@ -46,6 +46,10 @@ import {
   FileText,
   MapPin,
   GitCompareArrows,
+  ShieldCheck,
+  SlidersHorizontal,
+  GitBranch,
+  ScrollText,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/components/auth/auth-provider';
@@ -160,6 +164,10 @@ const NAV: NavGroup[] = [
     group: '系统设置',
     items: [
       { title: '数据字典', href: '/system/dictionary', icon: BookOpen, permission: 'md.read' },
+      { title: '角色权限', href: '/system/roles', icon: ShieldCheck, permission: 'sys.read' },
+      { title: '参数中心', href: '/system/settings', icon: SlidersHorizontal, permission: 'sys.read' },
+      { title: '审批流配置', href: '/system/approval-flows', icon: GitBranch, permission: 'sys.read' },
+      { title: '审计日志', href: '/system/audit-logs', icon: ScrollText, permission: 'sys.read' },
     ],
   },
 ];

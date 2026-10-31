@@ -215,7 +215,9 @@ async function prepareItems(input: OrderUpsertInput): Promise<{ items: PreparedI
 // 查询
 // ---------------------------------------------------------------------------
 
-export async function listOrders(query: ListQuery & { status?: string }): Promise<PagedResult<PurchaseOrderView>> {
+export async function listOrders(
+  query: ListQuery & { status?: string; createdByIds?: string[] },
+): Promise<PagedResult<PurchaseOrderView>> {
   const supabase = getSupabaseClient();
   let builder = supabase
     .from('po_purchase_orders')
@@ -224,6 +226,13 @@ export async function listOrders(query: ListQuery & { status?: string }): Promis
 
   if (query.status && (ORDER_STATUSES as readonly string[]).includes(query.status)) {
     builder = builder.eq('status', query.status);
+  }
+  // 数据级权限：限定可见操作人集合（all 范围不传此参）
+  if (query.createdByIds) {
+    if (query.createdByIds.length === 0) {
+      return { items: [], total: 0, page: query.page, page_size: query.pageSize };
+    }
+    builder = builder.in('created_by', query.createdByIds);
   }
   if (query.keyword) {
     const kw = escapeOrKeyword(query.keyword);

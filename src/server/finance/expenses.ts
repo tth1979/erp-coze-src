@@ -157,7 +157,7 @@ async function loadItems(claimId: string): Promise<ExpenseItemView[]> {
 /** 分页列表（status/period/keyword） */
 export async function listExpenses(
   query: ListQuery,
-  filter: { status?: string; period?: string } = {},
+  filter: { status?: string; period?: string; createdByIds?: string[] } = {},
 ): Promise<PagedResult<ExpenseClaimView>> {
   const supabase = getSupabaseClient();
   let builder = supabase
@@ -166,6 +166,13 @@ export async function listExpenses(
     .order('created_at', { ascending: false });
   if (filter.status) builder = builder.eq('status', filter.status);
   if (filter.period) builder = builder.eq('period', filter.period);
+  // 数据级权限：限定可见操作人集合（all 范围不传此参）
+  if (filter.createdByIds) {
+    if (filter.createdByIds.length === 0) {
+      return { items: [], total: 0, page: query.page, page_size: query.pageSize };
+    }
+    builder = builder.in('created_by', filter.createdByIds);
+  }
   if (query.keyword) {
     const kw = escapeOrKeyword(query.keyword);
     if (kw) builder = builder.or(`claim_no.ilike.*${kw}*,applicant.ilike.*${kw}*`);

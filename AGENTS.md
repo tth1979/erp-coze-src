@@ -56,17 +56,20 @@
 | 财务模块（已交付，含应收应付核销） | `fin_*` | 应收/应付欠款汇总 + 收付款单（登记超额拦截 + plpgsql 核销/冲销）+ 应收/应付单物化 + 流水台账 + 科目/凭证/期末结账/费用报销/银行对账/现金流量表 + 固定资产卡片与折旧处置 |
 | 报表模块（周边，V1） | `report_*`（无独立表，SDK 只读聚合） | 经营统计：汇总卡片/采购/销售/库存报表，dashboard 趋势图 |
 | 系统字典模块（周边，V1） | `dict_*` | 字典类型+字典项（计量单位/付款方式/税率/客户等级/状态），种子预置、供下拉引用 |
+| 系统管理模块（已交付 V1） | `sys_*`（复用前缀） | 四粒度权限（sys_roles/sys_role_permissions/sys_user_roles）+ 参数中心 sys_settings + 审计日志 sys_audit_logs（只追加）+ 审批流配置（复用 po_approval_rules） |
 | 计量单位（周边，V1） | `md_units` | 基础资料扩充：计量单位档案 + 基准单位+换算系数 |
 | 加工模块（已交付 V1） | `ma_*` | 加工单 MO（类型/损耗/投入产出）+ 四级审批 + 分批领料/分批完工 + 加工成本雏形（按投入均价分摊入成品） |
 | 税务模块（已交付 V2 增强） | `tax_*` | 进/销项税登记 + 发票台账 + 异地预缴 + 税会差异 + 申报底稿 |
 
 > 托管 PostgREST 仅暴露 public schema，故以表名前缀实现"单库逻辑多 schema"隔离。
 
-### 认证与权限（T2 雏形）
+### 认证与权限（T2 雏形 + 0020 四粒度增强）
 
-- **数据模型**：`sys_users`（用户主体+role 枚举）/ `sys_user_credentials`（凭证抽象，新增登录方式=新增 type）/ `sys_sessions`（会话）。
+- **数据模型**：`sys_users`（用户主体+role 枚举+dept 部门列 0020 新增）/ `sys_user_credentials`（凭证抽象，新增登录方式=新增 type）/ `sys_sessions`（会话）。
 - **登录**：POST `/api/auth/login` `{type:'password', payload:{username,password}}` → httpOnly Cookie `erp_session`。
-- **权限模型**：角色 → 权限点映射在 `src/server/auth/permissions.ts`（admin=`*`，manager=读写+`po.approve`/`so.approve`/`inv.write`/`inv.approve`，staff=只读）。
+- **权限模型**：内置角色 → 权限点映射在 `src/server/auth/permissions.ts`（admin=`*`，manager=读写+审批+sys 管理+字段级，staff=只读）；0020 起叠加自定义角色（sys_roles/sys_role_permissions/sys_user_roles）。
+- **有效授权（requireAuth 挂载）**：`resolveUserAuthorization(user)` = 内置角色权限 ∪ 自定义角色权限（仅 active），数据范围取所有角色最严格（`mergeScope`：self>dept>all，内置角色恒 all）；60s 内存缓存，角色/分配/权限变更时 `invalidateAuthorizationCache`。`AuthContext = { user, permissions, dataScope }`；`requirePermission` 优先读挂载的有效权限，未挂载回退静态映射（存量行为不变）。`/api/account/me` 返回有效 permissions + data_scope + custom_role_ids。
+- **四粒度**：菜单级/操作级=权限点（PERMISSION_CATALOG，granularity menu/operation/data/field）；数据级=`dataScopeUserIds(user, scope)` 返回 created_by 过滤集（all→undefined 不过滤、self→本人、dept→同部门），已接入 po/so 订单与 fin/expenses 列表；字段级=`maskSensitiveFields(rows, perms)` 缺 `field.cost_price` 置 null 成本价类字段、缺 `field.customer_phone` 置 null 手机号，已接入 md/products 与 md/customers 列表+详情。
 - **DEV 审批冒烟账号**：`dev_manager@coze.dev`（manager，密码 manager123456）、`dev_user@coze.dev`（staff）。
   API 层用 `requireAuth(request)` / `requirePermission(auth, 'md.write')` 做守卫；前端 `useAuth().can()` 控制菜单/按钮显隐。
 - **升级路径**：T3 完整 RBAC（roles/permissions/role_permissions/user_roles 四表）为单向加表升级，见 `src/server/auth/permissions.ts` 注释。
@@ -206,6 +209,17 @@
 | POST | /api/ma/orders/[id]/close | ma.write | 关闭加工单（draft/pending/rejected→closed） |
 | POST | /api/ma/orders/[id]/issue | ma.write | 分批领料 `{warehouse_id, items}`，扣原料库存（超计划 400） |
 | POST | /api/ma/orders/[id]/finish | ma.write | 分批完工 `{warehouse_id, items}`，产成品入库（损耗违约 400）；全部完成→completed |
+| GET/POST | /api/system/roles | sys.read / sys.write | 角色分页列表（keyword=编码/名称）/ 新建（code 唯一 409） |
+| GET/PUT/DELETE | /api/system/roles/[id] | sys.read / sys.write | 角色详情（含权限点+用户数）/ 更新（内置角色仅名称/描述）/ 删除（内置/已分配禁删 400） |
+| GET/PUT | /api/system/roles/[id]/permissions | sys.read / sys.write | 角色权限点读取 / 全量替换（内置角色禁改 400；非法点 400） |
+| GET | /api/system/users | sys.read | 用户列表（含内置角色+已分配自定义角色+部门，keyword） |
+| PUT | /api/system/users/[id]/roles | sys.write | 用户自定义角色全量分配（失效授权缓存） |
+| PUT | /api/system/users/[id]/dept | sys.write | 调整用户部门（数据级 dept 范围依据） |
+| GET/POST | /api/system/settings | sys.read / sys.write | 参数分页列表（group/keyword，返回 groups）/ 新建（key 唯一 409，值按类型校验 400，敏感仅 admin） |
+| GET/PUT/DELETE | /api/system/settings/[id] | sys.read / sys.write | 参数详情 / 更新（内置仅值+描述；敏感仅 admin 403）/ 删除（内置禁删 400） |
+| GET | /api/system/audit-logs | sys.read | 审计日志分页（action/resource/user/时间范围/keyword，只读无写端点） |
+| GET | /api/system/approval-rules | sys.read | 审批规则列表（含步骤，按 doc_type+level，返回 doc_types） |
+| PUT | /api/system/approval-rules/[id] | sys.write | 审批规则更新：金额区间+步骤序列全量替换（角色校验 400，写审计） |
 
 分页参数：`page`(≥1) `pageSize`(1-100) `keyword`（模糊搜索）；响应 `{ items, total, page, page_size }`。
 
@@ -347,6 +361,16 @@
   - **前端/导航**：`/tax/invoices`（台账+方向/类型/状态筛选+录入弹窗（价税合计实时预览）+行内勾选/申报/作废/删除）、`/tax/prepaid`（登记+作废）、`/tax/tax-diff`（登记+类型统计卡）；导航「税务」组新增 发票台账(FileText)/异地预缴(MapPin)/税会差异(GitCompareArrows)，税额统计权限点同步 tax.read。
   - **纯函数测试**：golden 新增价税合计/税率反算/税会差异符号/底稿应补·应退·留抵口径用例（共 99 passed）。
 
+- **系统管理**（四粒度权限/参数中心/审计日志/审批流配置，迁移 `0020_system_mgmt.sql`，`src/server/system/{roles,settings,audit,approval-rules}.ts`，页面 `/system/{roles,settings,audit-logs,approval-flows}`）：
+  - **表**：`sys_roles`（code 唯一、data_scope CHECK all/dept/self、is_system、status active/disabled）；`sys_role_permissions`（UNIQUE(role_id,permission_key)，FK cascade）；`sys_user_roles`（UNIQUE(user_id,role_id)，FK cascade）；`sys_settings`（key 唯一、value_type CHECK number/string/boolean/json、group_name、is_sensitive、is_system、updated_by FK）；`sys_audit_logs`（user_id 可空、username 快照、action、resource、resource_id、detail jsonb、ip、operated_at；**BEFORE UPDATE/DELETE 触发器 RAISE P0403 只追加**）；`sys_users` 加列 `dept`。五表 RLS。
+  - **角色**：内置 admin/manager/staff（is_system）种子——admin 通配不可配、内置角色禁删/禁改权限点（400）、已分配用户的角色禁删（400）；自定义角色 code 唯一 409；权限点全量替换须 ⊆ PERMISSION_CATALOG（非法 400）；用户-角色分配/部门调整后 `invalidateAuthorizationCache`。
+  - **参数中心**：`getSetting(key)`/`getNumberSetting` 带 30s 缓存供模块引用（阈值只在参数中心维护）；`validateValueByType`（number 须数字、boolean 限 true/false/1/0、json 须合法 JSON，违例 400）；敏感参数仅 admin 可建/改（403）；内置参数仅可改 value/description、禁删。
+  - **审计日志**：`writeAuditLog`（失败静默 console.error 不阻断业务）已埋点——登录成功、审批 submit/approve/reject（引擎中央函数）、凭证 post/void、参数增删改、角色增删改/权限配置/角色分配/部门调整、审批规则更新；查询仅 GET 只读（无写端点）。
+  - **审批流配置**：`listApprovalRules`（按 doc_type+level 排序，返回 doc_types）/ `updateApprovalRule`（金额区间 + steps 全量替换；步骤角色限 manager/admin 400；写审计）；前端 `/system/approval-flows` 按单据类型分组可视化编辑，配置即时生效于下次提交（引擎按提交时金额命中规则）。
+  - **权限点**：新增 `sys.read`（admin/manager）/ `sys.write`（admin/manager）/ `field.cost_price`（admin/manager）/ `field.customer_phone`（admin/manager）；staff 对 /api/system/* 全 403；匿名 401。
+  - **前端/导航**：`/system/roles`（角色列表+新建/编辑弹窗+权限点四粒度勾选面板+用户-角色分配与部门调整）、`/system/settings`（分组卡片+新建/编辑弹窗，值类型校验提示+敏感锁标识）、`/system/audit-logs`（操作/资源/用户/时间范围筛选+详情 JSON 弹层）、`/system/approval-flows`（按单据类型分组的档位卡片+编辑弹窗步骤序列）；导航「系统设置」组新增 角色权限(ShieldCheck)/参数中心(SlidersHorizontal)/审批流配置(GitBranch)/审计日志(ScrollText)，均 sys.read。
+  - **冒烟**：/tmp/system_mgmt_smoke.py 53 项——角色 CRUD/code409/权限配置、staff 分配自定义角色后并集获得 po.write+数据范围 self+成本价可见（回收后还原）、越权 md.write 仍 403、self 范围看不到他人单据、手机号脱敏置 null、参数 key409/坏值400/敏感 manager403、审计写入+无删除端点、审批规则更新/非法角色400、四页面 200、既有模块回归；golden 第 20 节 33 用例（共 160 passed）。
+
 - **成本结转两套模板（迁移 0013，幂等种子）**：`MANUFACTURE_FINISH`（event=manufacture_finish，借 1405 库存商品 `#amount` / 贷 5101 生产成本—加工归集 `#amount`）与 `SALES_SHIPMENT_COST`（event=sales_cof_shipment，借 6401 主营业务成本 `#amount` / 贷 1405 库存商品 `#amount`）；均 `balance_to=6601 管理费用`。`src/server/ledger/events.ts` 新增 `onSalesShipmentCost` / `onManufactureFinish`（按 (event_type,event_id) 幂等）。
 - **接入点**：`sales/shipments.ts#approveShipment` 与 `sales/orders.ts#completeOrder`（一键发货）终审出库后生成销售成本凭证（cost=单头 `total_cost`）；`processing.ts#finishManufacturing` 在加工单 →completed 后生成加工完工成本凭证（cost=`issued_cost` 投入成本，差额按损耗处理）。
 - **期末成本结转批处理**：`src/server/ledger/period-close.ts#closePeriodCostTransfer(period, operatorId)` 扫描期间内 `so_shipments.status=approved`（按 approved_at）与 `ma_* status=completed`（按 updated_at），对缺失凭证幂等补生成；`POST /api/fin/vouchers/period-close {period}`（admin 或 fin.write），返回 `{shipment_cost, manufacture_finish}` 新增计数（二次执行为 0）。
@@ -447,7 +471,7 @@ src/
 │   └── finance/                 # 财务通用：欠款汇总列表(kind 区分应收应付) / 收付款登记对话框 / 凭证/税务页面组件
 ├── lib/                     # api-client / types / use-paged-list(支持 filters)
 └── storage/database/        # supabase-client.ts + shared/schema.ts
-db/migrations/               # 版本化 SQL（0001 基础+认证 / 0002 采购 / 0003 销售 / 0004 库存 / 0005 财务 / 0006 采购 V2 五单+审批+成本+冲回 / 0007 销售 V2 出库+退货+等级报价 / 0008 库存 V2 多仓+批次+调拨+盘点+预警 / 0009 周边：系统字典 dict_* + 计量单位 md_units / 0010 财务 V2 应收应付核销 / 0011 财务凭证引擎+税务 / 0012 加工 ma_* / 0013 成本结转凭证 / 0014 PDA 移动端零迁移 / 0015 会计科目 fin_subjects/凭证手工记账 / 0016 期末结账：fin_accounting_periods 期间状态表(open/closed/annual_closed+locked+结转损益凭证号+结账/反结账留痕) + fin_period_logs 留痕日志表(仅INSERT) + 本年利润4103/未分配利润4104/所得税费用6402/税金及附加6403 种子 / 0017 费用报销 fin_expense_claims(+items)+ 银行对账单 fin_bank_statements + 其他应付款2241 种子 + expense 审批规则 / 0018 固定资产 fin_fixed_assets + 折旧记录 fin_depreciation_records(UNIQUE(asset_id,period)) + 6301/6711 种子 + fin_vouchers.event_id 扩宽 36→64 / 0019 税务增强：tax_invoices 发票台账(UNIQUE(direction,invoice_no)) + tax_prepaid 异地预缴 + tax_soc_diff 税会差异）
+db/migrations/               # 版本化 SQL（0001 基础+认证 / 0002 采购 / 0003 销售 / 0004 库存 / 0005 财务 / 0006 采购 V2 五单+审批+成本+冲回 / 0007 销售 V2 出库+退货+等级报价 / 0008 库存 V2 多仓+批次+调拨+盘点+预警 / 0009 周边：系统字典 dict_* + 计量单位 md_units / 0010 财务 V2 应收应付核销 / 0011 财务凭证引擎+税务 / 0012 加工 ma_* / 0013 成本结转凭证 / 0014 PDA 移动端零迁移 / 0015 会计科目 fin_subjects/凭证手工记账 / 0016 期末结账：fin_accounting_periods 期间状态表(open/closed/annual_closed+locked+结转损益凭证号+结账/反结账留痕) + fin_period_logs 留痕日志表(仅INSERT) + 本年利润4103/未分配利润4104/所得税费用6402/税金及附加6403 种子 / 0017 费用报销 fin_expense_claims(+items)+ 银行对账单 fin_bank_statements + 其他应付款2241 种子 + expense 审批规则 / 0018 固定资产 fin_fixed_assets + 折旧记录 fin_depreciation_records(UNIQUE(asset_id,period)) + 6301/6711 种子 + fin_vouchers.event_id 扩宽 36→64 / 0019 税务增强：tax_invoices 发票台账(UNIQUE(direction,invoice_no)) + tax_prepaid 异地预缴 + tax_soc_diff 税会差异 / 0020 系统管理：sys_roles + sys_role_permissions + sys_user_roles + sys_settings + sys_audit_logs(只追加触发器) + sys_users.dept）
 scripts/seed-dev.ts          # DEV 测试账号种子
 ```
 

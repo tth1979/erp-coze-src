@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
-import { requireAuth, requirePermission } from '@/server/auth/guard';
+import { effectivePermissionsOf, requireAuth, requirePermission } from '@/server/auth/guard';
+import { maskSensitiveFields } from '@/server/auth/permissions';
 import { fail, handleError, ok } from '@/server/http';
 import { parseListQuery } from '@/server/master-data/helpers';
 import { createCustomer, listCustomers } from '@/server/master-data/customers';
@@ -23,7 +24,8 @@ export async function GET(request: NextRequest) {
     const { user } = await requireAuth(request);
     requirePermission(user, 'md.read');
     const result = await listCustomers(parseListQuery(request.nextUrl.searchParams));
-    return ok(result);
+    // 字段级权限：无 field.customer_phone 时手机号置 null
+    return ok({ ...result, items: maskSensitiveFields(result.items, effectivePermissionsOf(user)) });
   } catch (error) {
     return handleError(error);
   }

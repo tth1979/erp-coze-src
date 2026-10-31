@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server';
 import { z } from 'zod';
-import { requireAuth, requirePermission } from '@/server/auth/guard';
+import { effectivePermissionsOf, requireAuth, requirePermission } from '@/server/auth/guard';
+import { maskSensitiveFields } from '@/server/auth/permissions';
 import { fail, handleError, ok } from '@/server/http';
 import { deleteCustomer, getCustomer, updateCustomer } from '@/server/master-data/customers';
 
@@ -24,7 +25,10 @@ export async function GET(request: NextRequest, context: RouteContext) {
     const { user } = await requireAuth(request);
     requirePermission(user, 'md.read');
     const { id } = await context.params;
-    return ok(await getCustomer(id));
+    const customer = await getCustomer(id);
+    // 字段级权限：无 field.customer_phone 时手机号置 null
+    const [masked] = maskSensitiveFields([customer as Record<string, unknown>], effectivePermissionsOf(user));
+    return ok(masked);
   } catch (error) {
     return handleError(error);
   }

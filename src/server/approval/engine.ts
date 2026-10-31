@@ -13,6 +13,7 @@
 import { ApiError } from '@/server/http';
 import { throwInventoryRpcError } from '@/server/inventory/shared';
 import { throwDbError } from '@/server/master-data/helpers';
+import { writeAuditLog } from '@/server/system/audit';
 import { getSupabaseClient } from '@/storage/database/supabase-client';
 import type { PoApprovalRule, PoApprovalRuleStep, PoApprovalStep, SysUser } from '@/storage/database/shared/schema';
 
@@ -169,6 +170,16 @@ export async function submitDocument(
     })
     .eq('id', docId);
   if (updErr) throwDbError(updErr, '提交审批');
+
+  // 审计：单据提交
+  await writeAuditLog({
+    userId: user.id,
+    username: user.username,
+    action: 'approval.submit',
+    resource: docType,
+    resourceId: docId,
+    detail: { amount, level: rule.level, steps: steps.length },
+  });
 }
 
 function canActAs(user: SysUser, approverRole: string): boolean {
@@ -235,6 +246,14 @@ export async function approveCurrentStep(
       .update({ current_step: step.step_no + 1, updated_at: new Date().toISOString() })
       .eq('id', docId);
     if (error) throwDbError(error, '推进审批步骤');
+    await writeAuditLog({
+      userId: user.id,
+      username: user.username,
+      action: 'approval.approve',
+      resource: docType,
+      resourceId: docId,
+      detail: { step_no: step.step_no, final: false },
+    });
     return;
   }
 
@@ -257,6 +276,14 @@ export async function approveCurrentStep(
       .update({ current_step: 0 })
       .eq('id', docId);
     if (csErr) throwDbError(csErr, '更新审批进度');
+    await writeAuditLog({
+      userId: user.id,
+      username: user.username,
+      action: 'approval.approve',
+      resource: docType,
+      resourceId: docId,
+      detail: { step_no: step.step_no, final: true },
+    });
     return;
   }
 
@@ -271,6 +298,14 @@ export async function approveCurrentStep(
     })
     .eq('id', docId);
   if (error) throwDbError(error, '终审通过');
+  await writeAuditLog({
+    userId: user.id,
+    username: user.username,
+    action: 'approval.approve',
+    resource: docType,
+    resourceId: docId,
+    detail: { step_no: step.step_no, final: true },
+  });
 }
 
 /** 驳回当前步：单据置 rejected（可编辑后重新提交） */
@@ -306,6 +341,14 @@ export async function rejectCurrentStep(
     })
     .eq('id', docId);
   if (error) throwDbError(error, '驳回单据');
+  await writeAuditLog({
+    userId: user.id,
+    username: user.username,
+    action: 'approval.reject',
+    resource: docType,
+    resourceId: docId,
+    detail: { step_no: step.step_no, reason },
+  });
 }
 
 /** 审批步骤时间线（含审批人姓名） */
