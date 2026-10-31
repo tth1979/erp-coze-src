@@ -17,6 +17,7 @@ import {
   approveCurrentStep,
   rejectCurrentStep,
   listSteps,
+  type ApprovalStepView,
 } from '@/server/approval/engine';
 import type { SysUser } from '@/storage/database/shared/schema';
 
@@ -58,7 +59,7 @@ export interface MaOrderView {
   creator_name: string | null;
   input_count: number;
   output_count: number;
-  steps: any[];
+  steps: ApprovalStepView[];
 }
 
 export interface MaInputItem {

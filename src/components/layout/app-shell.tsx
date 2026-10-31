@@ -39,6 +39,9 @@ import {
   LineChart,
   Landmark,
   CalendarCheck,
+  ReceiptText,
+  Banknote,
+  Waves,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/components/auth/auth-provider';
@@ -120,6 +123,8 @@ const NAV: NavGroup[] = [
       { title: '应收欠款', href: '/finance/receivables', icon: HandCoins, permission: 'fin.read' },
       { title: '应付欠款', href: '/finance/payables', icon: Wallet, permission: 'fin.read' },
       { title: '收付款流水', href: '/finance/payments', icon: ClipboardList, permission: 'fin.read' },
+      { title: '费用报销', href: '/finance/expenses', icon: ReceiptText, permission: 'fin.read' },
+      { title: '银行对账', href: '/finance/bank-recon', icon: Banknote, permission: 'fin.read' },
       { title: '会计科目', href: '/finance/subjects', icon: BookOpen, permission: 'fin.read' },
       { title: '记账凭证', href: '/finance/vouchers', icon: BookOpenCheck, permission: 'fin.read' },
       { title: '科目余额表', href: '/finance/balances', icon: Scale, permission: 'fin.read' },
@@ -139,6 +144,7 @@ const NAV: NavGroup[] = [
       { title: '库存报表', href: '/reports/inventory', icon: Boxes, permission: 'dashboard.read' },
       { title: '资产负债表', href: '/reports/balance-sheet', icon: Landmark, permission: 'fin.read' },
       { title: '利润表', href: '/reports/pnl', icon: LineChart, permission: 'fin.read' },
+      { title: '现金流量表', href: '/reports/cash-flow', icon: Waves, permission: 'fin.read' },
     ],
   },
   {

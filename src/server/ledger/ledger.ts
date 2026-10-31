@@ -19,6 +19,8 @@ export const EVENT_SALES_SHIPMENT_COST = 'sales_cof_shipment';
 export const EVENT_MANUFACTURE_FINISH = 'manufacture_finish';
 export const EVENT_PERIOD_PROFIT_CLOSE = 'period_profit_close';
 export const EVENT_YEAR_TO_RETAINED = 'year_retained';
+export const EVENT_EXPENSE_CLAIM = 'expense_claim';
+export const EVENT_EXPENSE_PAY = 'expense_pay';
 
 export type VoucherDirection = 'd' | 'c';
 export interface VoucherLine {
@@ -278,6 +280,81 @@ export async function ensureVoucher(input: VoucherInput): Promise<VoucherView> {
   const { error: lineErr } = await supabase.from('fin_voucher_lines').insert(
     lines.map((l) => ({ ...l, voucher_id: voucher.id })),
   );
+  if (lineErr) throw new ApiError(500, 'DB', `凭证分录写入失败：${lineErr.message}`);
+  return mapVoucher(voucher, lines);
+}
+
+export interface ExplicitVoucherInput {
+  event_type: string;
+  event_id: string;
+  voucher_date: string;
+  ref_no?: string;
+  ref_summary?: string;
+  template_code: string;
+  lines: { direction: VoucherDirection; account_code: string; summary?: string; amount: number }[];
+  operatorId: string;
+}
+
+/**
+ * 幂等生成"显式分录"已过账凭证（用于多费用科目等模板不便表达的场景）。
+ * - 分录取科目名称、校验借贷平衡（差额≤0.01）与科目末级/启用。
+ * - 同 event 已存在则直接返回既有（幂等）。
+ */
+export async function ensurePostedVoucherLines(input: ExplicitVoucherInput): Promise<VoucherView> {
+  const existing = await findVoucherByEvent(input.event_type, input.event_id);
+  if (existing) return existing;
+  const supabase = getSupabaseClient();
+  const valid = input.lines.filter((l) => Math.abs(l.amount) >= 0.005);
+  if (valid.length < 2) throw new ApiError(400, 'LEDGER.INVALID_LINES', '凭证至少需要两条有效分录');
+  await ensureLeafCodes(valid.map((l) => l.account_code));
+  const sumD = round2(valid.filter((l) => l.direction === 'd').reduce((a, l) => a + l.amount, 0));
+  const sumC = round2(valid.filter((l) => l.direction === 'c').reduce((a, l) => a + l.amount, 0));
+  if (Math.abs(sumD - sumC) > 0.01) {
+    throw new ApiError(400, 'LEDGER.UNBALANCED', `凭证借贷不平衡（借 ${sumD} ≠ 贷 ${sumC}）`);
+  }
+  // 科目名称
+  const codes = [...new Set(valid.map((l) => l.account_code))];
+  const { data: subs, error: subErr } = await supabase.from('fin_subjects').select('subject_code, subject_name').in('subject_code', codes);
+  if (subErr) throw new ApiError(500, 'DB', subErr.message);
+  const nameMap = new Map((subs ?? []).map((s) => [s.subject_code as string, s.subject_name as string]));
+  const voucherNo = await nextVoucherNo(input.voucher_date);
+  const { data, error } = await supabase
+    .from('fin_vouchers')
+    .insert({
+      voucher_no: voucherNo,
+      voucher_date: input.voucher_date,
+      event_type: input.event_type,
+      event_id: input.event_id,
+      ref_no: input.ref_no ?? null,
+      ref_summary: input.ref_summary ?? null,
+      template_code: input.template_code,
+      total_debit: String(sumD),
+      total_credit: String(sumC),
+      status: 'posted',
+      source: 'auto',
+      created_by: input.operatorId,
+      posted_by: input.operatorId,
+      posted_at: new Date().toISOString(),
+    })
+    .select()
+    .maybeSingle();
+  if (error) {
+    if (error.message && /\bfin_vouchers_event_uniq\b/.test(error.message)) {
+      const again = await findVoucherByEvent(input.event_type, input.event_id);
+      if (again) return again;
+    }
+    throw new ApiError(500, 'DB', error.message);
+  }
+  const voucher = data as Record<string, unknown>;
+  const lines: VoucherLineDB[] = valid.map((l, i) => ({
+    line_no: i + 1,
+    direction: l.direction,
+    account_code: l.account_code,
+    account_name: nameMap.get(l.account_code) ?? l.account_code,
+    amount: l.amount.toFixed(2),
+    summary: l.summary ?? null,
+  }));
+  const { error: lineErr } = await supabase.from('fin_voucher_lines').insert(lines.map((l) => ({ ...l, voucher_id: voucher.id })));
   if (lineErr) throw new ApiError(500, 'DB', `凭证分录写入失败：${lineErr.message}`);
   return mapVoucher(voucher, lines);
 }

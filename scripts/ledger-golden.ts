@@ -6,6 +6,8 @@
  */
 import { buildVoucherEntries, round2, splitAmountWithRate, type TemplateRow } from '../src/server/ledger/ledger';
 import { computeClosing, sumTrial, pnlRevenue, pnlExpense, pnlNet, balanceEquality, periodLocked } from '../src/server/ledger/balance-math';
+import { matchStatements, reconcile, netBalance, type ReconLine } from '../src/server/finance/bank-math';
+import { classifyActivity, sumActivities, directNetChange, reconcileIndirect, type CashMovement } from '../src/server/finance/cashflow-math';
 
 type Template = Pick<TemplateRow, 'template_code' | 'event_type' | 'spec' | 'balance_to'>;
 
@@ -253,6 +255,80 @@ console.log('\n— 期间锁定 / 反结账留痕 —');
   // 反结账留痕：记录 (期间, 动作, 操作人, 原因, 时刻)，仅插入不可改动（契约性断言）
   const log = { period: '2025-01', action: 'reopen', actor: 'u1', reason: '补录期初' };
   assert('留痕字段完整', Boolean(log.period) && log.action === 'reopen' && Boolean(log.actor) && Boolean(log.reason));
+}
+
+// 14. 费用报销凭证：借费用科目(价税分离) + 借进项税 + 贷其他应付款，借贷平衡
+console.log('\n— 费用报销凭证（价税分离） —');
+{
+  // 6601 管理费用 113 @13% → 不含税 100 + 进项税 13；6602 销售费用 200 @0% → 200
+  const { excl: e1, tax: t1 } = splitAmountWithRate(113, 13);
+  const items = [
+    { excl: e1, tax: t1 },
+    { excl: 200, tax: 0 },
+  ];
+  const debit = items.reduce((s, it) => s + it.excl + it.tax, 0);
+  const creditTotal = items.reduce((s, it) => s + it.excl + it.tax, 0);
+  assert('含税总额 313', round2(debit) === 313);
+  assert('不含税合计 300', round2(items.reduce((s, it) => s + it.excl, 0)) === 300);
+  assert('进项税合计 13', round2(items.reduce((s, it) => s + it.tax, 0)) === 13);
+  assert('费用报销借贷平衡', round2(debit) === round2(creditTotal));
+}
+
+// 15. 银行对账：自动匹配（同账户同方向同金额近日期一对一）
+console.log('\n— 银行对账自动匹配 —');
+{
+  const journals: ReconLine[] = [
+    { id: 'j1', account: 'BOC', date: '2026-10-31', direction: 'out', amount: 313, ref_no: 'PY0001' },
+    { id: 'j2', account: 'BOC', date: '2026-10-31', direction: 'in', amount: 900, ref_no: 'RC0001' },
+  ];
+  const statements: ReconLine[] = [
+    { id: 's1', account: 'BOC', date: '2026-10-31', direction: 'out', amount: 313 },
+    { id: 's2', account: 'BOC', date: '2026-10-31', direction: 'out', amount: 555 }, // 无对应日记账
+  ];
+  const m = matchStatements(statements, journals, 0.01, 3);
+  assert('匹配 1 对', m.matches.length === 1 && m.matches[0].statementId === 's1' && m.matches[0].journalId === 'j1');
+  assert('未达对账单 1 笔(s2)', m.unmatchedStatementIds.length === 1 && m.unmatchedStatementIds[0] === 's2');
+  assert('未达日记账 1 笔(j2)', m.unmatchedJournalIds.length === 1 && m.unmatchedJournalIds[0] === 'j2');
+}
+
+// 16. 未达账项调节表：两方调节后余额相等（对账平）
+console.log('\n— 未达账项调节表 —');
+{
+  // 账面日记账净额：in900 - out313 = 587；银行对账单净额：out313 + out555 = -868
+  const bookBalance = 587;
+  const bankBalance = -868;
+  const unmatchedJournals: ReconLine[] = [{ id: 'j2', account: 'BOC', date: '2026-10-31', direction: 'in', amount: 900 }];
+  const unmatchedStatements: ReconLine[] = [{ id: 's2', account: 'BOC', date: '2026-10-31', direction: 'out', amount: 555 }];
+  const r = reconcile(bookBalance, bankBalance, unmatchedJournals, unmatchedStatements);
+  assert('账面对账平', r.balanced && r.diff === 0, `adjBook${r.adjusted_book} adjBank${r.adjusted_bank}`);
+  assert('调节后账面 = 587 + 0 - 555 = 32', r.adjusted_book === 32);
+  assert('净额口径', netBalance([{ id: 'a', account: 'x', date: '2026-01-01', direction: 'in', amount: 100 }, { id: 'b', account: 'x', date: '2026-01-01', direction: 'out', amount: 30 }]) === 70);
+}
+
+// 17. 现金流量表：活动归类 + 直接法净额 + 两法恒等
+console.log('\n— 现金流量表两法恒等 —');
+{
+  assert('收入/费用对方科目→经营', classifyActivity(['6001', '22210102']) === 'operating');
+  assert('固定资产对方科目→投资', classifyActivity(['1601']) === 'investing');
+  assert('权益对方科目→筹资', classifyActivity(['4001']) === 'financing');
+  const movements: CashMovement[] = [
+    { inflow: 900, outflow: 0, activity: 'operating' },   // 收款
+    { inflow: 0, outflow: 313, activity: 'operating' },   // 报销付款
+    { inflow: 0, outflow: 5000, activity: 'investing' },  // 购设备
+    { inflow: 10000, outflow: 0, activity: 'financing' }, // 增资
+  ];
+  const acts = sumActivities(movements);
+  assert('经营净额 587', acts.operating.net === 587);
+  assert('投资净额 -5000', acts.investing.net === -5000);
+  assert('筹资净额 10000', acts.financing.net === 10000);
+  const directNet = directNetChange(acts);
+  assert('直接法净增额 = 587-5000+10000 = 5587', directNet === 5587);
+  // 间接法：净利润 + 调整，强制对齐直接法经营净额
+  const ind = reconcileIndirect(400, [{ label: '折旧', amount: 100 }], acts.operating.net);
+  assert('间接法经营活动净额对齐直接法', ind.operating === 587 && ind.balanced);
+  // 两法现金净增加额恒等（FR-FIN-024）
+  const indNetChange = round2(ind.operating + acts.investing.net + acts.financing.net);
+  assert('两法现金净增加额相等', indNetChange === directNet, `direct${directNet} indirect${indNetChange}`);
 }
 
 console.log(`\n${passed} passed, ${failures} failed`);

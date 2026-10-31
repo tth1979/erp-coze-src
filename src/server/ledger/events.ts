@@ -5,7 +5,7 @@
  */
 import { getSupabaseClient } from "@/storage/database/supabase-client";
 import { ApiError } from "@/server/http";
-import { ensureVoucher, splitAmountWithRate, round2, EVENT_SALES_SHIPMENT, EVENT_PURCHASE_RECEIPT, EVENT_RECEIPT_SETTLE, EVENT_PAYMENT_SETTLE, EVENT_RECEIPT_REVERSE, EVENT_SALES_SHIPMENT_COST, EVENT_MANUFACTURE_FINISH } from "@/server/ledger/ledger";
+import { ensureVoucher, ensurePostedVoucherLines, splitAmountWithRate, round2, EVENT_SALES_SHIPMENT, EVENT_PURCHASE_RECEIPT, EVENT_RECEIPT_SETTLE, EVENT_PAYMENT_SETTLE, EVENT_RECEIPT_REVERSE, EVENT_SALES_SHIPMENT_COST, EVENT_MANUFACTURE_FINISH, EVENT_EXPENSE_CLAIM, EVENT_EXPENSE_PAY } from "@/server/ledger/ledger";
 import { registerTaxEntry, TAX_OUTPUT, TAX_INPUT } from "@/server/tax/tax";
 
 export interface ItemAmount {
@@ -249,6 +249,76 @@ export async function onReceiptReverse(args: {
     doc_no: args.receipt_no,
     ref_type: 'receipt_reverse',
     ref_id: args.receipt_id,
+    operatorId: args.operatorId,
+  });
+}
+
+/**
+ * 费用报销审核通过 → 费用确认凭证（借各费用科目 + 可抵进项税 / 贷其他应付款-员工）。
+ * 支持多费用科目：按明细逐行建借方分录，贷方合计=含税总额。幂等（event=expense_claim, id=报销单）。
+ */
+export async function onExpenseApprove(args: {
+  claim_id: string;
+  claim_no: string;
+  applicant: string;
+  items: { subject_code: string; excl_amount: number; tax_amount: number; summary?: string }[];
+  credit_account: string;
+  credit_account_name: string;
+  operatorId: string;
+  date?: string;
+}) {
+  const lines: { direction: 'd' | 'c'; account_code: string; amount: number; summary?: string }[] = args.items
+    .filter((it) => Math.abs(it.excl_amount) >= 0.005)
+    .map((it) => ({
+      direction: 'd' as const,
+      account_code: it.subject_code,
+      amount: round2(it.excl_amount),
+      summary: it.summary,
+    }));
+  const taxSum = round2(args.items.reduce((s, it) => s + (it.tax_amount || 0), 0));
+  if (taxSum > 0.005) {
+    lines.push({ direction: 'd' as const, account_code: '22210101', amount: taxSum, summary: '可抵扣进项税额' });
+  }
+  const creditTotal = round2(args.items.reduce((s, it) => s + it.excl_amount + (it.tax_amount || 0), 0));
+  lines.push({
+    direction: 'c' as const,
+    account_code: args.credit_account,
+    amount: creditTotal,
+    summary: `应付${args.applicant}报销款`,
+  });
+  await ensurePostedVoucherLines({
+    event_type: EVENT_EXPENSE_CLAIM,
+    event_id: args.claim_id,
+    voucher_date: args.date ?? todayStr(),
+    ref_no: args.claim_no,
+    ref_summary: `费用报销：${args.applicant}`,
+    template_code: 'EXPENSE_CLAIM',
+    lines,
+    operatorId: args.operatorId,
+  });
+}
+
+/** 费用报销付款 → 借其他应付款 贷银行存款 凭证（幂等，event=expense_pay, id=报销单） */
+export async function onExpensePay(args: {
+  claim_id: string;
+  claim_no: string;
+  applicant: string;
+  amount: number;
+  debit_account: string;
+  operatorId: string;
+  date?: string;
+}) {
+  await ensurePostedVoucherLines({
+    event_type: EVENT_EXPENSE_PAY,
+    event_id: args.claim_id,
+    voucher_date: args.date ?? todayStr(),
+    ref_no: args.claim_no,
+    ref_summary: `报销付款：${args.applicant}`,
+    template_code: 'EXPENSE_PAY',
+    lines: [
+      { direction: 'd', account_code: args.debit_account, amount: round2(args.amount), summary: `支付${args.applicant}报销款` },
+      { direction: 'c', account_code: '1002', amount: round2(args.amount), summary: '银行付款' },
+    ],
     operatorId: args.operatorId,
   });
 }

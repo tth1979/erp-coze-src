@@ -165,6 +165,16 @@
 | GET | /api/tax/summary | fin.read | 期间×税率税额统计（销项/进项 金额·计税基数·税额，内存聚合） |
 | GET | /api/tax/filing?period=YYYY-MM | fin.read | 增值税纳税申报主表数据来源：按期间销项/进项 + vat_payable/carried_forward（留抵） |
 | POST | /api/fin/vouchers/period-close | admin / fin.write | 期末成本结转批处理 { period }，幂等补生成成本凭证，返回新增计数 |
+| GET/POST | /api/fin/expenses | fin.read / fin.write | 费用报销单分页列表（status/period/keyword=单号/报销人）/ 新建草稿（服务端重算价税分离） |
+| GET/PUT/DELETE | /api/fin/expenses/[id] | fin.read / fin.write | 报销单详情（含明细+审批步骤）/ 更新（draft/rejected）/ 删除（仅 draft） |
+| POST | /api/fin/expenses/[id]/submit、approve、reject | fin.write | 提交审批（docType=expense 按含税金额分级）/ 终审通过（生成费用确认凭证，幂等）/ 驳回 |
+| POST | /api/fin/expenses/[id]/pay | fin.write | 登记付款：approved→paid，生成 fin_payments + 付款凭证（借2241/贷1002，幂等） |
+| GET/POST | /api/fin/bank-statements | fin.read / fin.write | 银行对账单分页列表 / 录入（bank_account/tran_date/direction/amount） |
+| PUT/DELETE | /api/fin/bank-statements/[id] | fin.write | 对账单更新 / 删除（已匹配不可删） |
+| POST | /api/fin/bank-statements/auto-match | fin.write | 自动匹配：对账单↔日记账（同账户+方向+金额+日期临近，一对一） |
+| POST | /api/fin/bank-statements/[id]/unmatch | fin.write | 取消匹配 |
+| GET | /api/fin/bank-recon | fin.read | 银行对账视图：account + journal(日记账归集) + statements + reconciliation(未达账项调节表) |
+| GET | /api/fin/cash-flow?period=YYYY-MM | fin.read | 现金流量表：直接法（经营/投资/筹资）+ 间接法净利润调节表，两法净增加额强制相等 |
 | GET | /api/report/overview | 已登录 | 经营报表汇总：cards(采购/销售/毛利/应收应付/库存总值) + buckets(今日/本月/累计) + trends(近12月趋势) |
 | GET | /api/report/purchase | 已登录 | 采购报表（groupBy=suppider/month，from/to 过滤） |
 | GET | /api/report/sales | 已登录 | 销售报表（groupBy=customer/product/month，from/to 过滤） |
@@ -280,6 +290,30 @@
 - **前端**：`/finance/period-close`（'use client'，`useAuth().can('fin.write')` 控制操作按钮）：月结清单表格（期间/状态徽章/凭证数/借贷合计/试算平衡/结转损益单号），行内 转损益·结账·反结账（弹 reason 必填框）·日志抽屉，右上「年结」对话框（输入年份）。合计金额 `formatMoney`，`fin.read` 只读、写操作需 `fin.write`。
 - **导航**：`app-shell.tsx` 财务组新增「财务报表→/reports/pnl、期末结账→/finance/period-close」；报表组新增「利润表→/reports/pnl、资产负债表→/reports/balance-sheet」。
 
+### 费用报销 / 银行对账 / 现金流量表（0017，fin_*）
+
+- **迁移 0017_expense_bank_cf.sql**（独立文件，幂等 + RLS，不改既有迁移）：
+  - `fin_expense_claims`（报销单头：`claim_no` 唯一 BX+yyyymmdd-NNNN、applicant、dept、claim_date、period、payee、`pay_account`(贷方科目，默认 2241 其他应付款)、status(draft/pending/approved/rejected/paid)、total_amount/excl_amount/tax_amount、approval_level/current_step/submitted_*/approved_at、`voucher_no`(费用确认凭证)、`payment_id`(付款单)、reject_reason、remark、created_by/at）与 `fin_expense_claim_items`（明细：subject_code/name 快照、summary、amount 含税、tax_rate、excl_amount、tax_amount）。
+  - `fin_bank_statements`（银行对账单：bank_account、tran_date、direction in/out、amount、summary、balance、`matched_status` unmatched/matched、matched_ref_type/id/no、source、remark）。
+  - 种子：`2241 其他应付款`（负债类、贷）；审批规则 `doc_type='expense'` 按含税金额分档（第 1 档 0–1000 一级 manager，第 2 档 >1000 两级 manager→admin）；
+- **费用报销**（`src/server/finance/expenses.ts`）：
+  - `GET/POST /api/fin/expenses`、`GET/PUT/DELETE /api/fin/expenses/[id]`（fin.read/fin.write）：列表分页(status/period/keyword=单号/申请人)、详情含明细+审批步骤；服务端重算价税分离（`computeItem`：amount=r/(1+rate)，excl、tax 分别 round2）与合计，禁客户端传金额；仅 draft/rejected 可编辑，仅 draft 可删。
+  - `POST .../submit`（draft/rejected→pending，按含税金额分级）、`.../approve`、`.../reject`：复用四级审批引擎 `docType='expense'`（`src/server/approval/engine.ts` 已扩展 table=fin_expense_claims）。
+  - **审核通过生成费用确认凭证**（幂等 UNIQUE event_type,event_id）：`onExpenseApprove`（events.ts）→ 借 各费用科目(不含税 excl) + 借 22210101 可抵扣进项税(合计 tax) + 贷 `pay_account`(默认 2241 其他应付款) 含税合计；回写 claim.voucher_no。
+  - `POST .../pay`（仅 approved→paid）：登记 `fin_payments`(direction=payment,status=approved) + `onExpensePay` 生成付款凭证（借 2241 其他应付款 / 贷 1002 银行存款）+ 回写 payment_id。
+- **银行对账**（`src/server/finance/bank.ts` + 纯函数 `bank-math.ts`）：
+  - `GET/POST /api/fin/bank-statements`、`PUT/DELETE /[id]`、`POST /auto-match`、`POST /[id]/unmatch`、`GET /api/fin/bank-recon`（fin.read/fin.write）。
+  - 日记账（book）源：`fin_payments`(status=approved；receipt→in、payment→out) 按银行账户归集；对账单（bank）= `fin_bank_statements`。
+  - **自动匹配** `matchStatements`：同账户 + 同方向 + 金额(±0.01) + 日期(±3 天) 一对一贪心，优先日期最近；命中置 matched_status=matched + matched_ref_*。
+  - **未达账项调节表** `reconcile`：账面调节 = 账面余额 + 银行已记企业未记净额；银行调节 = 银行余额 + 企业已记银行未记净额；两者 `diff≈0` 即 `balanced`。前端 `/finance/bank-recon`（账户/自动匹配/录入/导入、未达账项表、调节表平衡徽章）。
+- **现金流量表**（`src/server/finance/cashflow.ts` + 纯函数 `cashflow-math.ts`，`GET /api/fin/cash-flow?period=YYYY-MM`，fin.read）：
+  - **直接法**：遍历期间已过账凭证，凡触及货币资金科目(1001/1002)按**对方科目编码归类**活动——`classifyActivity`：16xx/17xx/15xx/1901→投资、4xxx→筹资、其余→经营；汇总各类流入/流出/净额，`directNetChange`=三类净额之和=货币资金净变动。
+  - **间接法**：净利润(取自 P&L) + 非付现/营运资本调整，以直接法经营净额为锚点、差异列入「其他调整（结构性差异）」，`reconcileIndirect` 保证 `balanced`；**两法现金净增加额强制相等**（FR-FIN-024），接口返回 `methods_equal`/`diff`。
+  - 前端 `/reports/cash-flow`（直接法/间接法 Tab、可打印、两法恒等徽章）。
+- **权限**：fin.read（含 staff 只读）/ fin.write（admin+manager 可写，报销/对账/付款）；匿名 401。
+- **前端/导航**：页面 `/finance/expenses`（报销单列表+`expense-form-dialog`新建多明细行+`expense-detail-sheet`详情/审批/`pay`登记付款）、`/finance/bank-recon`、`/reports/cash-flow`；`app-shell.tsx` 财务组新增「费用报销(ReceiptText)、银行对账(Banknote)」、报表组新增「现金流量表(Waves)」；`ApprovalPanel` docType 已扩展 `expense`（API_BASE→/api/fin/expenses）。
+- **纯函数测试**：`scripts/ledger-golden.ts` 新增费用报销价税分离、银行对账匹配/未达账项调节、现金流量活动归类/两法恒等用例（共 68 passed）。
+
 - **成本结转两套模板（迁移 0013，幂等种子）**：`MANUFACTURE_FINISH`（event=manufacture_finish，借 1405 库存商品 `#amount` / 贷 5101 生产成本—加工归集 `#amount`）与 `SALES_SHIPMENT_COST`（event=sales_cof_shipment，借 6401 主营业务成本 `#amount` / 贷 1405 库存商品 `#amount`）；均 `balance_to=6601 管理费用`。`src/server/ledger/events.ts` 新增 `onSalesShipmentCost` / `onManufactureFinish`（按 (event_type,event_id) 幂等）。
 - **接入点**：`sales/shipments.ts#approveShipment` 与 `sales/orders.ts#completeOrder`（一键发货）终审出库后生成销售成本凭证（cost=单头 `total_cost`）；`processing.ts#finishManufacturing` 在加工单 →completed 后生成加工完工成本凭证（cost=`issued_cost` 投入成本，差额按损耗处理）。
 - **期末成本结转批处理**：`src/server/ledger/period-close.ts#closePeriodCostTransfer(period, operatorId)` 扫描期间内 `so_shipments.status=approved`（按 approved_at）与 `ma_* status=completed`（按 updated_at），对缺失凭证幂等补生成；`POST /api/fin/vouchers/period-close {period}`（admin 或 fin.write），返回 `{shipment_cost, manufacture_finish}` 新增计数（二次执行为 0）。
@@ -380,7 +414,7 @@ src/
 │   └── finance/                 # 财务通用：欠款汇总列表(kind 区分应收应付) / 收付款登记对话框 / 凭证/税务页面组件
 ├── lib/                     # api-client / types / use-paged-list(支持 filters)
 └── storage/database/        # supabase-client.ts + shared/schema.ts
-db/migrations/               # 版本化 SQL（0001 基础+认证 / 0002 采购 / 0003 销售 / 0004 库存 / 0005 财务 / 0006 采购 V2 五单+审批+成本+冲回 / 0007 销售 V2 出库+退货+等级报价 / 0008 库存 V2 多仓+批次+调拨+盘点+预警 / 0009 周边：系统字典 dict_* + 计量单位 md_units / 0010 财务 V2 应收应付核销 / 0011 财务凭证引擎+税务 / 0012 加工 ma_* / 0013 成本结转凭证 / 0014 PDA 移动端零迁移 / 0015 会计科目 fin_subjects/凭证手工记账 / 0016 期末结账：fin_accounting_periods 期间状态表(open/closed/annual_closed+locked+结转损益凭证号+结账/反结账留痕) + fin_period_logs 留痕日志表(仅INSERT) + 本年利润4103/未分配利润4104/所得税费用6402/税金及附加6403 种子））
+db/migrations/               # 版本化 SQL（0001 基础+认证 / 0002 采购 / 0003 销售 / 0004 库存 / 0005 财务 / 0006 采购 V2 五单+审批+成本+冲回 / 0007 销售 V2 出库+退货+等级报价 / 0008 库存 V2 多仓+批次+调拨+盘点+预警 / 0009 周边：系统字典 dict_* + 计量单位 md_units / 0010 财务 V2 应收应付核销 / 0011 财务凭证引擎+税务 / 0012 加工 ma_* / 0013 成本结转凭证 / 0014 PDA 移动端零迁移 / 0015 会计科目 fin_subjects/凭证手工记账 / 0016 期末结账：fin_accounting_periods 期间状态表(open/closed/annual_closed+locked+结转损益凭证号+结账/反结账留痕) + fin_period_logs 留痕日志表(仅INSERT) + 本年利润4103/未分配利润4104/所得税费用6402/税金及附加6403 种子 / 0017 费用报销 fin_expense_claims(+items)+ 银行对账单 fin_bank_statements + 其他应付款2241 种子 + expense 审批规则））
 scripts/seed-dev.ts          # DEV 测试账号种子
 ```
 

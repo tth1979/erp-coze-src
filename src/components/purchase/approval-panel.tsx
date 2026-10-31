@@ -32,6 +32,7 @@ const API_BASE: Record<string, string> = {
   transfer: '/api/inv/transfers',
   check: '/api/inv/checks',
   manufacture: '/api/ma/orders',
+  expense: '/api/fin/expenses',
 };
 
 function formatTime(value: string | null): string {
@@ -51,7 +52,7 @@ export function ApprovalPanel({
   canApprove,
   onChanged,
 }: {
-  docType: 'requisition' | 'order' | 'receipt' | 'return' | 'sales_order' | 'shipment' | 'sales_return' | 'transfer' | 'check' | 'manufacture';
+  docType: 'requisition' | 'order' | 'receipt' | 'return' | 'sales_order' | 'shipment' | 'sales_return' | 'transfer' | 'check' | 'manufacture' | 'expense';
   docId: string;
   status: string;
   steps: ApprovalStep[];
