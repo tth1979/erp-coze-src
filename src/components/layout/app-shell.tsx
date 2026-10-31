@@ -36,6 +36,9 @@ import {
   Wallet,
   Warehouse,
   X,
+  LineChart,
+  Landmark,
+  CalendarCheck,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/components/auth/auth-provider';
@@ -121,6 +124,8 @@ const NAV: NavGroup[] = [
       { title: '记账凭证', href: '/finance/vouchers', icon: BookOpenCheck, permission: 'fin.read' },
       { title: '科目余额表', href: '/finance/balances', icon: Scale, permission: 'fin.read' },
       { title: '试算平衡表', href: '/finance/trial-balance', icon: Percent, permission: 'fin.read' },
+      { title: '财务报表', href: '/reports/pnl', icon: LineChart, permission: 'fin.read' },
+      { title: '期末结账', href: '/finance/period-close', icon: CalendarCheck, permission: 'fin.read' },
       { title: '税额统计', href: '/tax/taxes', icon: Percent, permission: 'fin.read' },
       { title: '纳税申报', href: '/tax/filing', icon: FileBarChart, permission: 'fin.read' },
     ],
@@ -132,6 +137,8 @@ const NAV: NavGroup[] = [
       { title: '采购报表', href: '/reports/purchase', icon: ShoppingCart, permission: 'dashboard.read' },
       { title: '销售报表', href: '/reports/sales', icon: Receipt, permission: 'dashboard.read' },
       { title: '库存报表', href: '/reports/inventory', icon: Boxes, permission: 'dashboard.read' },
+      { title: '资产负债表', href: '/reports/balance-sheet', icon: Landmark, permission: 'fin.read' },
+      { title: '利润表', href: '/reports/pnl', icon: LineChart, permission: 'fin.read' },
     ],
   },
   {

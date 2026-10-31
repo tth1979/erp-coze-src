@@ -8,6 +8,7 @@
 import { ApiError } from "@/server/http";
 import { getSupabaseClient } from "@/storage/database/supabase-client";
 import { ensureLeafCodes } from "@/server/finance/leaf-guard";
+import { assertPeriodOpen } from "@/server/finance/period-guard";
 
 export const EVENT_SALES_SHIPMENT = 'sales_shipment';
 export const EVENT_PURCHASE_RECEIPT = 'purchase_receipt';
@@ -16,6 +17,8 @@ export const EVENT_PAYMENT_SETTLE = 'payment_settle';
 export const EVENT_RECEIPT_REVERSE = 'receipt_reverse';
 export const EVENT_SALES_SHIPMENT_COST = 'sales_cof_shipment';
 export const EVENT_MANUFACTURE_FINISH = 'manufacture_finish';
+export const EVENT_PERIOD_PROFIT_CLOSE = 'period_profit_close';
+export const EVENT_YEAR_TO_RETAINED = 'year_retained';
 
 export type VoucherDirection = 'd' | 'c';
 export interface VoucherLine {
@@ -146,7 +149,7 @@ interface VoucherInput {
   operatorId: string;
 }
 
-async function nextVoucherNo(date: string): Promise<string> {
+export async function nextVoucherNo(date: string): Promise<string> {
   const supabase = getSupabaseClient();
   const prefix = `记-${date}-`;
   const { data, error } = await supabase
@@ -471,6 +474,7 @@ export async function createManualDraftVoucher(
     if (!l.account_code) throw new ApiError(400, 'LEDGER.INVALID_ACCOUNT', '分录缺少科目编码');
   }
   await ensureLeafCodes(input.lines.map((l) => l.account_code));
+  await assertPeriodOpen(input.voucher_date.slice(0, 7));
   const sumD = round2(input.lines.filter((l) => l.direction === 'd').reduce((a, l) => a + l.amount, 0));
   const sumC = round2(input.lines.filter((l) => l.direction === 'c').reduce((a, l) => a + l.amount, 0));
   if (Math.abs(sumD - sumC) > 0.01) throw new ApiError(400, 'LEDGER.UNBALANCED', `凭证借贷不平衡（借 ${sumD} ≠ 贷 ${sumC}）`);
@@ -521,6 +525,7 @@ export async function postVoucher(id: string, operator: { id: string }): Promise
   const supabase = getSupabaseClient();
   const v = await getVoucher(id);
   if (v.status !== 'draft') throw new ApiError(400, 'LEDGER.BAD_TRANSITION', '仅草稿凭证可过账');
+  await assertPeriodOpen(v.voucher_date.slice(0, 7));
   const { error } = await supabase
     .from('fin_vouchers')
     .update({ status: 'posted', posted_by: operator.id, posted_at: new Date().toISOString(), updated_at: new Date().toISOString() })

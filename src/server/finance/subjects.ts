@@ -260,10 +260,14 @@ function periodRange(period: string): { from: string; to: string } {
 }
 
 /** 按期间取已过账(非作废)凭证分录的科目发生额 */
-async function periodAccountFlows(period: string): Promise<Map<string, VoucherAcc>> {
-  const supabase = getSupabaseClient();
+export async function periodAccountFlows(period: string): Promise<Map<string, VoucherAcc>> {
   const { from, to } = periodRange(period);
-  // 已过账且非作废的凭证
+  return accountFlowsBetween(from, to);
+}
+
+/** 按任意日期区间取已过账(非作废)凭证分录的科目发生额 */
+export async function accountFlowsBetween(from: string, to: string): Promise<Map<string, VoucherAcc>> {
+  const supabase = getSupabaseClient();
   const { data: vouchers, error: vErr } = await supabase
     .from('fin_vouchers')
     .select('id')
@@ -287,7 +291,7 @@ async function periodAccountFlows(period: string): Promise<Map<string, VoucherAc
   return acc;
 }
 
-async function loadSubjects(): Promise<SubjectView[]> {
+export async function loadSubjects(): Promise<SubjectView[]> {
   const supabase = getSupabaseClient();
   const { data, error } = await supabase.from('fin_subjects').select('*').order('subject_code', { ascending: true });
   if (error) throwDbError(error, '查询科目');

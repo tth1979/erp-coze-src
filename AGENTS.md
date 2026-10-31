@@ -153,6 +153,14 @@
 | GET/PUT/DELETE | /api/fin/subjects/[id] | fin.read / fin.write | 科目详情 / 更新（含期初、父级、可停用）/ 删除（有分录引用/子级/期初余额不可删，可停用） |
 | GET | /api/fin/balances?period=YYYY-MM | fin.read | 科目余额表：按期初+本期借/贷+期末实时聚合，父级自动汇总子级 |
 | GET | /api/fin/trial-balance?period=YYYY-MM | fin.read | 试算平衡表：以实际分录发生额为口径（红字符号相抵），借贷必等 + 差额定位 |
+| GET | /api/fin/pnl?period=YYYY-MM | fin.read | 利润表：以损益科目本期发生额实时汇总（收入-成本=毛利、营业利润、利润总额、所得税、净利润、返点基数，本期/上期对比） |
+| GET | /api/fin/balance-sheet?period=YYYY-MM | fin.read | 资产负债表：按类别期末余额实时汇总（期初/期末两列、货币资金、资产=负债+权益 balanced+diff） |
+| GET | /api/fin/periods | fin.read | 月结清单：各会计期间状态/凭证数/借贷合计/试算平衡/结转损益单号 |
+| POST | /api/fin/periods/[period]/profit-close | fin.write | 结转损益（损益→本年利润4103，借贷平衡、幂等防重，无发生额 skipped） |
+| POST | /api/fin/periods/[period]/close | fin.write | 期间结账：先结转损益再把期间 open→closed 并锁定，写日志 |
+| POST | /api/fin/periods/[period]/reopen | fin.write | 反结账留痕 {reason}：closed→open 解锁，记录谁/何时/原因（日志不可删） |
+| POST | /api/fin/periods/[period]/year-close | fin.write | 年结：关全年各月+本年利润→未分配利润4104+资产/负债/权益结转次年期初，置 annual_closed |
+| GET | /api/fin/periods/[period]/logs | fin.read | 期间结账/结转/反结账/年结留痕日志（仅追加） |
 | GET | /api/tax/entries | fin.read | 税额登记分页（tax_type/period/keyword = 单号模糊） |
 | GET | /api/tax/summary | fin.read | 期间×税率税额统计（销项/进项 金额·计税基数·税额，内存聚合） |
 | GET | /api/tax/filing?period=YYYY-MM | fin.read | 增值税纳税申报主表数据来源：按期间销项/进项 + vat_payable/carried_forward（留抵） |
@@ -254,6 +262,24 @@
 - **科目余额表 / 试算平衡**：`src/server/finance/subjects.ts#getSubjectBalances(period)` 按期间实时聚合 期初+本期借/贷+期末（父级自动汇总子级，方向符号：正=借 负=贷）；`#getTrialBalance(period)` 以**实际分录发生额**为口径（含红字符号相抵），借贷必等，不平衡展示差额定位。调试口径由 `src/server/ledger/balance-math.ts`（`computeClosing`/`sumTrial`/`round2`）纯函数支撑，金标准 `scripts/ledger-golden.ts` 已加用例。
 - **前端页面**：`/finance/subjects`（科目字典：类别分组/树表/增删改/期初/启停）、`/finance/balances`（余额表，期间选择）、`/finance/trial-balance`（试算平衡，期间选择，借贷合计+平衡标识+差额）；导航「财务→会计科目/资金模块→记账凭证·科目余额·试算平衡」。
 
+### 财务报表 + 期末结账与年结（0016，fin_*）
+
+- **迁移 0016_financial_close.sql**（独立文件，幂等 + RLS）：建 `fin_accounting_periods`（期间状态表：`period` PK、`status` open/closed/annual_closed、`locked` 期间锁定、`year_end` 年结标记、`profit_close_voucher_no/id` 结转损益凭证引用、`closed_by/at`、`reversed_by/at/reason` 反结账留痕）与 `fin_period_logs`（留痕日志表，**仅 INSERT**：action close/ reopen/ profit_close/ year_close、actor、reason、ref_voucher_no、payload、happened_at）；种子补 `4103 本年利润`、`4104 未分配利润`、`6402 所得税费用`、`6403 税金及附加` 科目。
+- **利润表 P&L**（`GET /api/fin/pnl?period=YYYY-MM`，fin.read）：以损益类科目(category=6)本期发生额**实时汇总**（不缓存/不写死）；行=营业收入(6001，含退货贷方冲减)/营业成本(6401)/税金及附加/销管财三项费用/营业利润/营业外收支/利润总额/所得税费用/净利润；summary 附 毛利=收入−成本、毛利率、返点基数=不含税收入−退货（MOD-06）。金额口径=已过账凭证分录，价税分离（销售收入科目本身即不含税）。支持与上期(`shiftPeriod`)对比。页面 `/reports/pnl`（本期/上期两列、summary 卡片、可打印）。
+- **资产负债表**（`GET /api/fin/balance-sheet?period=`，fin.read）：按科目类别 资产1/负债2/共同3/权益4 的**期末余额（结转后口径）实时汇总**，期初/期末两列按 `opening_*` 与 `closing_*`；`money_fund` 货币资金=库存现金+银行存款等现金类；`total_assets` vs `total_liab_equity` 必须 `balanced`（差值 `diff` 定位展示）。页面 `/reports/balance-sheet`（分组卡片、期初/期末、平衡徽章 + 差值、可打印）。
+- **服务端**：`src/server/finance/reports.ts`（getPnl/getBalanceSheet，复用 `subjects.ts` 的 `accountFlowsBetween`/`getSubjectBalances` 与 `loadSubjects`）；纯函数在 `src/server/ledger/balance-math.ts`（`pnlRevenue/pnlExpense/pnlNet/balanceEquality/periodLocked`）。
+- **期末结账 / 补结转**（`/api/fin/periods`，fin.read；动作 POST fin.write）：
+  - `GET /api/fin/periods` → 月结清单：各期间 status/locked/voucher_count（posted 凭证数）/total_debit/credit/balanced（试算平衡）/profit_close_voucher_no。
+  - `POST /api/fin/periods/[period]/profit-close` → **结转损益**：把所有损益科目余额结转至「本年利润 4103」，借贷恒平衡、`(event_type=period_profit_close,event_id=period)` 幂等防重；无发生额返回 `{skipped:true}`。
+  - `POST /api/fin/periods/[period]/close` → **期间结账**：先结转损益再把期间 open→closed 并 locked，写日志。
+  - `POST /api/fin/periods/[period]/reopen` body `{reason}` → **反结账留痕**：closed→open、unlock，记录谁/何时/原因到 `fin_period_logs`（日志不可删除）。
+  - `POST /api/fin/periods/[period]/year-close`（period 取年份前 4 位）→ **年结**：顺带把该年 12 个月 closed → 本年利润→未分配利润(4104) 凭证（event_type=year_retained,event_id=year 幂等）→ 资产/负债/权益科目期末结转次年期初（更新 `opening_amount/opening_direction`）、本年利润期初清零、期间置 annual_closed。
+  - `GET /api/fin/periods/[period]/logs` → 期间留痕日志。
+- **期间锁定（period-guard）**：`src/server/finance/period-guard.ts`（叶模块避免循环依赖）`isPeriodLocked/assertPeriodOpen`；接入手工凭证创建(`createManualDraftVoucher`)与过账(`postVoucher`)——无 `fin_accounting_periods` 记录或 locked 期间禁止过账新凭证（400 `FIN.PERIOD_LOCKED`）。**结账后该期间不再允许新增/修改/过账，只可红字冲销或反结账。**
+- **凭证事件**：`EVENT_PERIOD_PROFIT_CLOSE='period_profit_close'`、`EVENT_YEAR_TO_RETAINED='year_retained'`（`src/server/ledger/ledger.ts`）；结转凭证 status=posted/source=auto/template_code=period_profit_close 或 year_to_retained。
+- **前端**：`/finance/period-close`（'use client'，`useAuth().can('fin.write')` 控制操作按钮）：月结清单表格（期间/状态徽章/凭证数/借贷合计/试算平衡/结转损益单号），行内 转损益·结账·反结账（弹 reason 必填框）·日志抽屉，右上「年结」对话框（输入年份）。合计金额 `formatMoney`，`fin.read` 只读、写操作需 `fin.write`。
+- **导航**：`app-shell.tsx` 财务组新增「财务报表→/reports/pnl、期末结账→/finance/period-close」；报表组新增「利润表→/reports/pnl、资产负债表→/reports/balance-sheet」。
+
 - **成本结转两套模板（迁移 0013，幂等种子）**：`MANUFACTURE_FINISH`（event=manufacture_finish，借 1405 库存商品 `#amount` / 贷 5101 生产成本—加工归集 `#amount`）与 `SALES_SHIPMENT_COST`（event=sales_cof_shipment，借 6401 主营业务成本 `#amount` / 贷 1405 库存商品 `#amount`）；均 `balance_to=6601 管理费用`。`src/server/ledger/events.ts` 新增 `onSalesShipmentCost` / `onManufactureFinish`（按 (event_type,event_id) 幂等）。
 - **接入点**：`sales/shipments.ts#approveShipment` 与 `sales/orders.ts#completeOrder`（一键发货）终审出库后生成销售成本凭证（cost=单头 `total_cost`）；`processing.ts#finishManufacturing` 在加工单 →completed 后生成加工完工成本凭证（cost=`issued_cost` 投入成本，差额按损耗处理）。
 - **期末成本结转批处理**：`src/server/ledger/period-close.ts#closePeriodCostTransfer(period, operatorId)` 扫描期间内 `so_shipments.status=approved`（按 approved_at）与 `ma_* status=completed`（按 updated_at），对缺失凭证幂等补生成；`POST /api/fin/vouchers/period-close {period}`（admin 或 fin.write），返回 `{shipment_cost, manufacture_finish}` 新增计数（二次执行为 0）。
@@ -328,7 +354,7 @@ src/
 │   ├── purchase/            # 采购 V2：orders(订单) / requisitions(申请+转订单) / receipts(入库+暂估冲回) / returns(退货)
 │   ├── sales/               # 销售 V2：orders(订单+quote 等级报价) / shipments(出库+成本结转) / returns(退货红字回补)
 │   ├── inventory/           # 库存服务（stock 余额/warehouses 仓库/batches 批次/alerts 预警/movements 流水/transfers 调拨/checks 盘点/RPC 错误映射）
-│   ├── finance/             # 财务服务（payments 收付款单 CRUD + 应收/应付欠款汇总 + 超额校验）
+│   ├── finance/             # 财务服务（payments 收付款单 CRUD + 应收/应付欠款汇总 + 超额校验 + subjects 科目字典/余额/试算平衡 + reports 利润表/资产负债表 + period-close 期末结账/结转损益/反结账/年结 + period-guard 期间锁定）
 │   ├── ledger/              # 凭证引擎（ledger 模板+平衡+幂等+红冲 / events 业务事件接入层 computeItemsTax+fetchName）
 │   ├── tax/                 # 税务（tax 销项/进项登记 + 期间×税率税额统计）
 │   ├── reporting/           # 报表服务（overview 汇总卡片+趋势 / purchase / sales / inventory 分组聚合 / parse/shared）
@@ -337,12 +363,12 @@ src/
 ├── app/(app)/               # 登录后区域（路由组，layout 内做守卫）
 │   ├── dashboard/           # 仪表盘（含采购/销售/库存/财务统计卡片 + 经营指标卡 + 近12月 SVG 趋势）
 │   ├── master-data/         # customers / suppliers / products / units(计量单位) 页面
-│   ├── reports/             # 经营报表：overview / purchase / sales / inventory（分组切换+打印）
+│   ├── reports/             # 经营报表：overview / purchase / sales / inventory（分组切换+打印）+ pnl 利润表 / balance-sheet 资产负债表（期间+本期/上期或期初/期末、可打印）
 │   ├── system/              # system/dictionary 数据字典（类型+字典项双栏维护）
 │   ├── purchase/            # orders(订单) / requisitions(申请+convert) / receipts(入库+冲回) / returns(退货)，均列表+new+[id]
 │   ├── sales/               # orders(订单) / shipments(出库) / returns(退货)，均列表+new+[id]（new 需 ?order= 预填）
 │   ├── inventory/           # stock 库存余额(冻结) / movements 台账 / batches 批次 / alerts 预警 / warehouses 仓库 / transfers 调拨(列表+new+[id]) / checks 盘点(列表+new+[id])
-│   └── finance/             # receivables 应收欠款 / payables 应付欠款 / payments 收付款流水
+│   └── finance/             # receivables 应收欠款 / payables 应付欠款 / payments 收付款流水 / subjects 会计科目 / vouchers 记账凭证 / balances 科目余额表 / trial-balance 试算平衡 / period-close 期末结账与年结
 ├── components/
 │   ├── auth/auth-provider.tsx   # 会话 Context（useAuth().can()）
 │   ├── layout/app-shell.tsx     # 侧边栏 + 顶栏（移动端抽屉导航）
@@ -354,7 +380,7 @@ src/
 │   └── finance/                 # 财务通用：欠款汇总列表(kind 区分应收应付) / 收付款登记对话框 / 凭证/税务页面组件
 ├── lib/                     # api-client / types / use-paged-list(支持 filters)
 └── storage/database/        # supabase-client.ts + shared/schema.ts
-db/migrations/               # 版本化 SQL（0001 基础+认证 / 0002 采购 / 0003 销售 / 0004 库存 / 0005 财务 / 0006 采购 V2 五单+审批+成本+冲回 / 0007 销售 V2 出库+退货+等级报价 / 0008 库存 V2 多仓+批次+调拨+盘点+预警 / 0009 周边：系统字典 dict_* + 计量单位 md_units / 0010 财务 V2 应收应付核销：fin_payments 加核销状态列+索引+fin_apply_receipt/payment 与 fin_cancel_receipt/payment plpgsql 函数（幂等 + RLS） / 0011 财务凭证引擎+税务：fin_voucher_templates/fin_vouchers/fin_voucher_lines + tax_entries 表、md_products.tax_rate列、5 组内置凭证模板（均幂等 + RLS） / 0012 加工 ma_* / 0013 成本结转凭证：MANUFACTURE_FINISH + SALES_SHIPMENT_COST 两套模板种子（幂等））
+db/migrations/               # 版本化 SQL（0001 基础+认证 / 0002 采购 / 0003 销售 / 0004 库存 / 0005 财务 / 0006 采购 V2 五单+审批+成本+冲回 / 0007 销售 V2 出库+退货+等级报价 / 0008 库存 V2 多仓+批次+调拨+盘点+预警 / 0009 周边：系统字典 dict_* + 计量单位 md_units / 0010 财务 V2 应收应付核销 / 0011 财务凭证引擎+税务 / 0012 加工 ma_* / 0013 成本结转凭证 / 0014 PDA 移动端零迁移 / 0015 会计科目 fin_subjects/凭证手工记账 / 0016 期末结账：fin_accounting_periods 期间状态表(open/closed/annual_closed+locked+结转损益凭证号+结账/反结账留痕) + fin_period_logs 留痕日志表(仅INSERT) + 本年利润4103/未分配利润4104/所得税费用6402/税金及附加6403 种子））
 scripts/seed-dev.ts          # DEV 测试账号种子
 ```
 

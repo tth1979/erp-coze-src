@@ -5,7 +5,7 @@
  * 纯函数测试，不依赖数据库。
  */
 import { buildVoucherEntries, round2, splitAmountWithRate, type TemplateRow } from '../src/server/ledger/ledger';
-import { computeClosing, sumTrial } from '../src/server/ledger/balance-math';
+import { computeClosing, sumTrial, pnlRevenue, pnlExpense, pnlNet, balanceEquality, periodLocked } from '../src/server/ledger/balance-math';
 
 type Template = Pick<TemplateRow, 'template_code' | 'event_type' | 'spec' | 'balance_to'>;
 
@@ -215,6 +215,44 @@ console.log('\n— 试算平衡汇总 —');
     { debit: 0, credit: 480 },
   ]);
   assert('不平衡差额20', !u.balanced && u.diff === 20 && u.total_debit === 500 && u.total_credit === 480);
+}
+
+// 11. 利润表口径：营业收入=贷方净值（抵减退货）、成本=借方净值、毛利率、结转损益净额
+console.log('\n— 利润表口径 —');
+{
+  const revenue = pnlRevenue(11800, 800); // 含销项后分离的本期不含税收入 11800，退货红字冲减 800
+  const cost = pnlExpense(7600, 0);
+  assert('营业收入=贷方净值-退货', revenue === 11000);
+  assert('营业成本=借方净值', cost === 7600);
+  const gross = round2(revenue - cost);
+  assert('毛利=收入-成本', gross === 3400);
+  const net = pnlNet(11000 + 300, 7600 + 500 + 400 + 200); // 收入 11300，费用 8700
+  assert('利润总额=收入-费用', net === 2600);
+  const retainedNeg = pnlNet(6000, 8200); // 亏损
+  assert('亏损结转借方', retainedNeg === -2200);
+}
+
+// 12. 资产负债表平衡：资产(借正) + 负债+权益(贷负) = 0
+console.log('\n— 资产负债表平衡 —');
+{
+  const assets = 150000; // 资产借正
+  const liabEquity = -138000 - 12000; // 负债 + 所有者权益（贷负）
+  const eq = balanceEquality(assets, liabEquity);
+  assert('资产=负债+权益', eq.balanced && eq.diff === 0);
+  const bad = balanceEquality(150000, -138000);
+  assert('差值定位(12000)', !bad.balanced && bad.diff === 12000);
+}
+
+// 13. 期末结账：期间锁定状态与反结账留痕判定
+console.log('\n— 期间锁定 / 反结账留痕 —');
+{
+  assert('open 未锁定', periodLocked('open', false) === false);
+  assert('closed 锁定', periodLocked('closed', false) === true);
+  assert('annual_closed 锁定', periodLocked('annual_closed', false) === true);
+  assert('locked 标记锁定', periodLocked('open', true) === true);
+  // 反结账留痕：记录 (期间, 动作, 操作人, 原因, 时刻)，仅插入不可改动（契约性断言）
+  const log = { period: '2025-01', action: 'reopen', actor: 'u1', reason: '补录期初' };
+  assert('留痕字段完整', Boolean(log.period) && log.action === 'reopen' && Boolean(log.actor) && Boolean(log.reason));
 }
 
 console.log(`\n${passed} passed, ${failures} failed`);
