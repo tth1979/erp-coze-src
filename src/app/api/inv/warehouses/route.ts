@@ -9,7 +9,7 @@ export async function GET(request: NextRequest) {
   try {
     const { user } = await requireAuth(request);
     requirePermission(user, 'inv.read');
-    return ok(await listWarehouses());
+    return ok({ items: await listWarehouses() });
   } catch (error) {
     return handleError(error);
   }

@@ -21,8 +21,9 @@ export function useWarehouses() {
     let cancelled = false;
     apiFetch<{ items: InvWarehouse[] }>('/api/inv/warehouses')
       .then((data) => {
-        cache = data.items;
-        if (!cancelled) setWarehouses(data.items);
+        const list = data.items ?? [];
+        cache = list;
+        if (!cancelled) setWarehouses(list);
       })
       .catch(() => {
         /* 权限/网络失败时保持空列表，由表单自行兜底 */

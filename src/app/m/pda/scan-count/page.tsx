@@ -14,7 +14,7 @@ interface Warehouse {
   id: string;
   code: string;
   name: string;
-  status: string;
+  is_active: boolean;
 }
 
 const ACTIVE = (s: string) => s === 'draft' || s === 'pending';
@@ -34,10 +34,10 @@ export default function ScanCountPage() {
 
   const loadWarehouses = useCallback(async () => {
     try {
-      const rows = await apiFetch<Warehouse[]>('/api/inv/warehouses');
+      const res = await apiFetch<{ items: Warehouse[] }>('/api/inv/warehouses');
+      const rows = res.items ?? [];
       setWarehouses(rows);
-      const activeFirst = rows.filter((w) => w.status === 'active');
-      if (activeFirst.length && !whId) setWhId(rows.find((w) => w.status === 'active')?.id ?? rows[0].id);
+      if (rows.length && !whId) setWhId(rows.find((w) => w.is_active)?.id ?? rows[0].id);
     } catch (e) {
       toast.error(e instanceof ApiClientError ? e.message : '仓库加载失败');
     }
@@ -176,7 +176,7 @@ export default function ScanCountPage() {
           >
             <option value="">请选择仓库</option>
             {warehouses
-              .filter((w) => w.status === 'active')
+              .filter((w) => w.is_active)
               .map((w) => (
                 <option key={w.id} value={w.id}>
                   {w.name}（{w.code}）
