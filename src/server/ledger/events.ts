@@ -5,8 +5,9 @@
  */
 import { getSupabaseClient } from "@/storage/database/supabase-client";
 import { ApiError } from "@/server/http";
-import { ensureVoucher, ensurePostedVoucherLines, splitAmountWithRate, round2, EVENT_SALES_SHIPMENT, EVENT_PURCHASE_RECEIPT, EVENT_RECEIPT_SETTLE, EVENT_PAYMENT_SETTLE, EVENT_RECEIPT_REVERSE, EVENT_SALES_SHIPMENT_COST, EVENT_MANUFACTURE_FINISH, EVENT_EXPENSE_CLAIM, EVENT_EXPENSE_PAY } from "@/server/ledger/ledger";
+import { ensureVoucher, ensurePostedVoucherLines, splitAmountWithRate, round2, EVENT_SALES_SHIPMENT, EVENT_PURCHASE_RECEIPT, EVENT_RECEIPT_SETTLE, EVENT_PAYMENT_SETTLE, EVENT_RECEIPT_REVERSE, EVENT_SALES_SHIPMENT_COST, EVENT_MANUFACTURE_FINISH, EVENT_EXPENSE_CLAIM, EVENT_EXPENSE_PAY, EVENT_DEPRECIATION, EVENT_ASSET_DISPOSAL } from "@/server/ledger/ledger";
 import { registerTaxEntry, TAX_OUTPUT, TAX_INPUT } from "@/server/tax/tax";
+import { buildDisposalLines } from "@/server/finance/fixed-assets-math";
 
 export interface ItemAmount {
   product_id: string;
@@ -321,4 +322,68 @@ export async function onExpensePay(args: {
     ],
     operatorId: args.operatorId,
   });
+}
+
+/**
+ * 固定资产月度计提 → 折旧凭证（借 折旧费用科目 / 贷 1602 累计折旧）。
+ * 幂等（event=depreciation, id=期间:资产），同一资产同一期间只生成一次。
+ */
+export async function onDepreciation(args: {
+  asset_id: string;
+  asset_no: string;
+  asset_name: string;
+  period: string;
+  amount: number;
+  expense_subject: string; // 折旧费用科目（末级，默认 6601）
+  operatorId: string;
+  date?: string;
+}) {
+  const v = await ensurePostedVoucherLines({
+    event_type: EVENT_DEPRECIATION,
+    event_id: `${args.period}:${args.asset_id}`,
+    voucher_date: args.date ?? todayStr(),
+    ref_no: args.asset_no,
+    ref_summary: `计提折旧：${args.asset_name}（${args.period}）`,
+    template_code: 'DEPRECIATION',
+    lines: [
+      { direction: 'd', account_code: args.expense_subject, amount: round2(args.amount), summary: `计提折旧：${args.asset_name}` },
+      { direction: 'c', account_code: '1602', amount: round2(args.amount), summary: `累计折旧：${args.asset_name}` },
+    ],
+    operatorId: args.operatorId,
+  });
+  return v;
+}
+
+/**
+ * 固定资产处置 → 处置凭证（借 累计折旧+处置收入或损失 / 贷 固定资产原值+处置收益）。
+ * 处置损失借 6711 营业外支出、处置收益贷 6301 营业外收入，借贷恒平衡。
+ * 幂等（event=asset_disposal, id=资产）。
+ */
+export async function onAssetDisposal(args: {
+  asset_id: string;
+  asset_no: string;
+  asset_name: string;
+  original_value: number;
+  accrued: number;
+  income: number;
+  operatorId: string;
+  date?: string;
+}) {
+  const lines = buildDisposalLines({
+    originalValue: args.original_value,
+    accrued: args.accrued,
+    income: args.income,
+    assetName: args.asset_name,
+  });
+  const v = await ensurePostedVoucherLines({
+    event_type: EVENT_ASSET_DISPOSAL,
+    event_id: args.asset_id,
+    voucher_date: args.date ?? todayStr(),
+    ref_no: args.asset_no,
+    ref_summary: `处置固定资产：${args.asset_name}`,
+    template_code: 'ASSET_DISPOSAL',
+    lines: lines.map((l) => ({ direction: l.direction, account_code: l.account_code, amount: l.amount, summary: l.summary })),
+    operatorId: args.operatorId,
+  });
+  return v;
 }

@@ -53,7 +53,7 @@
 | 采购模块（已交付 V2） | `po_*` | 五单主链路：申请单(审批)→订单(审批)→入库单(暂估/冲回)→退货单；四级审批引擎；入库即库存+移动加权成本 |
 | 销售模块（已交付 V2） | `so_*` | 三单主链路：订单(审批+等级价格)→出库单(数量强校验+成本结转)→退货单(红字回补)；应收联动 |
 | 库存模块（已交付 V2） | `inv_*` | 多仓台账（现有/在途/冻结/可用）+ 批次 FIFO + 只追加台账 + 调拨单(IT)双边单事务 + 盘点单(IC)差异过账 + 安全库存预警 |
-| 财务模块（已交付，含应收应付核销） | `fin_*` | 应收/应付欠款汇总 + 收付款单（登记超额拦截 + plpgsql 核销/冲销）+ 应收/应付单物化 + 流水台账 |
+| 财务模块（已交付，含应收应付核销） | `fin_*` | 应收/应付欠款汇总 + 收付款单（登记超额拦截 + plpgsql 核销/冲销）+ 应收/应付单物化 + 流水台账 + 科目/凭证/期末结账/费用报销/银行对账/现金流量表 + 固定资产卡片与折旧处置 |
 | 报表模块（周边，V1） | `report_*`（无独立表，SDK 只读聚合） | 经营统计：汇总卡片/采购/销售/库存报表，dashboard 趋势图 |
 | 系统字典模块（周边，V1） | `dict_*` | 字典类型+字典项（计量单位/付款方式/税率/客户等级/状态），种子预置、供下拉引用 |
 | 计量单位（周边，V1） | `md_units` | 基础资料扩充：计量单位档案 + 基准单位+换算系数 |
@@ -175,6 +175,11 @@
 | POST | /api/fin/bank-statements/[id]/unmatch | fin.write | 取消匹配 |
 | GET | /api/fin/bank-recon | fin.read | 银行对账视图：account + journal(日记账归集) + statements + reconciliation(未达账项调节表) |
 | GET | /api/fin/cash-flow?period=YYYY-MM | fin.read | 现金流量表：直接法（经营/投资/筹资）+ 间接法净利润调节表，两法净增加额强制相等 |
+| GET/POST | /api/fin/fixed-assets | fin.read / fin.write | 固定资产卡片分页列表（keyword=编码/名称、category、status）/ 新建（asset_no 可自定义，唯一 409，残值<原值校验） |
+| GET/PUT/DELETE | /api/fin/fixed-assets/[id] | fin.read / fin.write | 卡片详情（含折旧历史+累计折旧+净值）/ 更新（已计提禁改计量字段）/ 删除（仅未计提且未处置，400 守卫） |
+| POST | /api/fin/fixed-assets/[id]/dispose | fin.write | 处置（sell/scrap）：生成处置凭证（借1602+处置收入或损失6711/贷1601原值+收益6301，幂等），状态→disposed 停止折旧 |
+| GET | /api/fin/depreciation | fin.read | 折旧历史分页（period/asset_id 过滤，含资产编码+名称） |
+| POST | /api/fin/depreciation/run | fin.write | 月度计提 {period}：在用且未提足资产逐条生成折旧凭证（借费用科目/贷1602），UNIQUE(asset_id,period) 幂等 |
 | GET | /api/report/overview | 已登录 | 经营报表汇总：cards(采购/销售/毛利/应收应付/库存总值) + buckets(今日/本月/累计) + trends(近12月趋势) |
 | GET | /api/report/purchase | 已登录 | 采购报表（groupBy=suppider/month，from/to 过滤） |
 | GET | /api/report/sales | 已登录 | 销售报表（groupBy=customer/product/month，from/to 过滤） |
@@ -314,6 +319,16 @@
 - **前端/导航**：页面 `/finance/expenses`（报销单列表+`expense-form-dialog`新建多明细行+`expense-detail-sheet`详情/审批/`pay`登记付款）、`/finance/bank-recon`、`/reports/cash-flow`；`app-shell.tsx` 财务组新增「费用报销(ReceiptText)、银行对账(Banknote)」、报表组新增「现金流量表(Waves)」；`ApprovalPanel` docType 已扩展 `expense`（API_BASE→/api/fin/expenses）。
 - **纯函数测试**：`scripts/ledger-golden.ts` 新增费用报销价税分离、银行对账匹配/未达账项调节、现金流量活动归类/两法恒等用例（共 68 passed）。
 
+- **固定资产与折旧**（`src/server/finance/fixed-assets.ts` + 纯函数 `fixed-assets-math.ts`，迁移 `0018_fixed_assets.sql`）：
+  - **表**：`fin_fixed_assets`（asset_no 唯一 FAyyyymmdd-NNNN、name/category/spec、original_value、depreciation_method='straight_line'、useful_life(月)、salvage_value、acquisition_date/acquisition_period、related_subject(折旧费用科目，默认 6601 管理费用)、status in_use/fully_depreciated/disposed、处置字段 disposal_*）；`fin_depreciation_records`（asset_id FK、period、amount、voucher_id/voucher_no，**UNIQUE(asset_id,period) 幂等**）。两表 RLS。
+  - **直线法口径**（纯函数，golden 直接回归）：月折旧额=(原值−残值)/使用年限(月)；**最后一期兜底**（`periodDepreciation` 当 months_accrued+1=useful_life 时取剩余应提，尾差归零，提足后净额=残值）；**入账次月起提**（runDepreciation 筛选 `acquisition_period < period`）。
+  - **月度计提** `runDepreciation(period)`（fin.write，期间须开放）：对在用未提足资产逐条生成折旧凭证（借 related_subject / 贷 1602 累计折旧，event=depreciation id=`{period}:{asset_id}` 幂等）+ 写 records（UNIQUE 兜底，重复执行 processed=0）；提足自动置 fully_depreciated。`GET /api/fin/depreciation` 折旧历史（period/asset_id 过滤，含资产编码+名称）。
+  - **处置** `disposeFixedAsset`（fin.write，期间须开放）：`buildDisposalLines` 恒平衡——借 1602 累计折旧 + 1002 处置收入 + (净值>收入时借 6711 营业外支出损失) / 贷 1601 原值 + (收入>净值时贷 6301 营业外收入收益)；event=asset_disposal id=asset_id 幂等；状态→disposed 停止折旧。
+  - **守卫**：残值须<原值（400 FIN.SALVAGE_TOO_HIGH）；asset_no 唯一（409 FIN.ASSET_NO_DUP）；已计提(months_accrued>0)禁改原值/残值/年限/入账日期且禁删（400 FIN.ASSET_HAS_DEPRECIATION）；已处置禁改禁删禁重复处置（400 FIN.ASSET_DISPOSED）。
+  - **迁移 0018 附带**：`fin_vouchers.event_id` varchar(36)→**varchar(64)**（折旧 event_id `YYYY-MM:uuid` 需 44 字符，非破坏扩宽）；种子 6301/6711 科目（ON CONFLICT 幂等）。
+  - **前端/导航**：`/finance/fixed-assets`（列表+类别/状态筛选+`fixed-asset-form-dialog`新建（实时月折旧预览）+`fixed-asset-detail-sheet`详情含折旧进度条/折旧历史/处置弹层（实时损益测算））、`/finance/depreciation`（汇总卡片+选期间执行计提+本次明细+折旧历史）；导航「固定资产(Landmark)、折旧计提(Calculator)」入财务组。
+  - **纯函数测试**：golden 新增直线法(含残值)/最后月归零兜底/净值口径/处置损失与收益与报废三种平衡用例（共 86 passed）。
+
 - **成本结转两套模板（迁移 0013，幂等种子）**：`MANUFACTURE_FINISH`（event=manufacture_finish，借 1405 库存商品 `#amount` / 贷 5101 生产成本—加工归集 `#amount`）与 `SALES_SHIPMENT_COST`（event=sales_cof_shipment，借 6401 主营业务成本 `#amount` / 贷 1405 库存商品 `#amount`）；均 `balance_to=6601 管理费用`。`src/server/ledger/events.ts` 新增 `onSalesShipmentCost` / `onManufactureFinish`（按 (event_type,event_id) 幂等）。
 - **接入点**：`sales/shipments.ts#approveShipment` 与 `sales/orders.ts#completeOrder`（一键发货）终审出库后生成销售成本凭证（cost=单头 `total_cost`）；`processing.ts#finishManufacturing` 在加工单 →completed 后生成加工完工成本凭证（cost=`issued_cost` 投入成本，差额按损耗处理）。
 - **期末成本结转批处理**：`src/server/ledger/period-close.ts#closePeriodCostTransfer(period, operatorId)` 扫描期间内 `so_shipments.status=approved`（按 approved_at）与 `ma_* status=completed`（按 updated_at），对缺失凭证幂等补生成；`POST /api/fin/vouchers/period-close {period}`（admin 或 fin.write），返回 `{shipment_cost, manufacture_finish}` 新增计数（二次执行为 0）。
@@ -414,7 +429,7 @@ src/
 │   └── finance/                 # 财务通用：欠款汇总列表(kind 区分应收应付) / 收付款登记对话框 / 凭证/税务页面组件
 ├── lib/                     # api-client / types / use-paged-list(支持 filters)
 └── storage/database/        # supabase-client.ts + shared/schema.ts
-db/migrations/               # 版本化 SQL（0001 基础+认证 / 0002 采购 / 0003 销售 / 0004 库存 / 0005 财务 / 0006 采购 V2 五单+审批+成本+冲回 / 0007 销售 V2 出库+退货+等级报价 / 0008 库存 V2 多仓+批次+调拨+盘点+预警 / 0009 周边：系统字典 dict_* + 计量单位 md_units / 0010 财务 V2 应收应付核销 / 0011 财务凭证引擎+税务 / 0012 加工 ma_* / 0013 成本结转凭证 / 0014 PDA 移动端零迁移 / 0015 会计科目 fin_subjects/凭证手工记账 / 0016 期末结账：fin_accounting_periods 期间状态表(open/closed/annual_closed+locked+结转损益凭证号+结账/反结账留痕) + fin_period_logs 留痕日志表(仅INSERT) + 本年利润4103/未分配利润4104/所得税费用6402/税金及附加6403 种子 / 0017 费用报销 fin_expense_claims(+items)+ 银行对账单 fin_bank_statements + 其他应付款2241 种子 + expense 审批规则））
+db/migrations/               # 版本化 SQL（0001 基础+认证 / 0002 采购 / 0003 销售 / 0004 库存 / 0005 财务 / 0006 采购 V2 五单+审批+成本+冲回 / 0007 销售 V2 出库+退货+等级报价 / 0008 库存 V2 多仓+批次+调拨+盘点+预警 / 0009 周边：系统字典 dict_* + 计量单位 md_units / 0010 财务 V2 应收应付核销 / 0011 财务凭证引擎+税务 / 0012 加工 ma_* / 0013 成本结转凭证 / 0014 PDA 移动端零迁移 / 0015 会计科目 fin_subjects/凭证手工记账 / 0016 期末结账：fin_accounting_periods 期间状态表(open/closed/annual_closed+locked+结转损益凭证号+结账/反结账留痕) + fin_period_logs 留痕日志表(仅INSERT) + 本年利润4103/未分配利润4104/所得税费用6402/税金及附加6403 种子 / 0017 费用报销 fin_expense_claims(+items)+ 银行对账单 fin_bank_statements + 其他应付款2241 种子 + expense 审批规则 / 0018 固定资产 fin_fixed_assets + 折旧记录 fin_depreciation_records(UNIQUE(asset_id,period)) + 6301/6711 种子 + fin_vouchers.event_id 扩宽 36→64）
 scripts/seed-dev.ts          # DEV 测试账号种子
 ```
 

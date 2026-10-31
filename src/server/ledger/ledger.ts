@@ -21,6 +21,8 @@ export const EVENT_PERIOD_PROFIT_CLOSE = 'period_profit_close';
 export const EVENT_YEAR_TO_RETAINED = 'year_retained';
 export const EVENT_EXPENSE_CLAIM = 'expense_claim';
 export const EVENT_EXPENSE_PAY = 'expense_pay';
+export const EVENT_DEPRECIATION = 'depreciation';
+export const EVENT_ASSET_DISPOSAL = 'asset_disposal';
 
 export type VoucherDirection = 'd' | 'c';
 export interface VoucherLine {

@@ -8,6 +8,7 @@ import { buildVoucherEntries, round2, splitAmountWithRate, type TemplateRow } fr
 import { computeClosing, sumTrial, pnlRevenue, pnlExpense, pnlNet, balanceEquality, periodLocked } from '../src/server/ledger/balance-math';
 import { matchStatements, reconcile, netBalance, type ReconLine } from '../src/server/finance/bank-math';
 import { classifyActivity, sumActivities, directNetChange, reconcileIndirect, type CashMovement } from '../src/server/finance/cashflow-math';
+import { straightLineMonthly, periodDepreciation, netValue, buildDisposalLines } from '../src/server/finance/fixed-assets-math';
 
 type Template = Pick<TemplateRow, 'template_code' | 'event_type' | 'spec' | 'balance_to'>;
 
@@ -329,6 +330,57 @@ console.log('\n— 现金流量表两法恒等 —');
   // 两法现金净增加额恒等（FR-FIN-024）
   const indNetChange = round2(ind.operating + acts.investing.net + acts.financing.net);
   assert('两法现金净增加额相等', indNetChange === directNet, `direct${directNet} indirect${indNetChange}`);
+}
+
+// 18. 固定资产折旧：直线法 + 残值 + 最后月归零兜底 + 处置分录平衡 + 净值口径
+console.log('\n— 固定资产折旧与处置 —');
+{
+  // 直线法：原值 120000、残值 6000、48 月 → 月折旧 2375
+  const a1 = { originalValue: 120000, salvageValue: 6000, usefulLife: 48 };
+  assert('直线法月折旧 (120000-6000)/48=2375', straightLineMonthly(a1) === 2375);
+  // 含残值口径：应提总额 = 原值 − 残值
+  const depTotal = round2(a1.originalValue - a1.salvageValue);
+  assert('应提总额 114000', depTotal === 114000);
+  // 常规期 = 月折旧额
+  assert('第 1 期计提 2375', periodDepreciation(a1, 0, 0) === 2375);
+  assert('第 47 期（非最后）仍 2375', periodDepreciation(a1, 46, 2375 * 46) === 2375);
+  // 最后月兜底：第 48 期应提 = 剩余 = 114000 - 2375*47 = 2375
+  assert('最后期提足剩余', periodDepreciation(a1, 47, 2375 * 47) === 2375);
+  // 提足后不再计提
+  assert('提足后期提额为 0', periodDepreciation(a1, 48, 114000) === 0);
+
+  // 尾差归零：原值 10000、残值 0、3 月 → 月 3333.33，末期兜底 3333.34
+  const a2 = { originalValue: 10000, salvageValue: 0, usefulLife: 3 };
+  assert('尾差资产月折旧 3333.33', straightLineMonthly(a2) === 3333.33);
+  assert('末期兜底归零 3333.34', periodDepreciation(a2, 2, round2(3333.33 * 2)) === 3333.34);
+  const sumA2 = round2(3333.33 + 3333.33 + 3333.34);
+  assert('末期兜底后应提总额=10000（应提余额归零）', sumA2 === 10000, `sum=${sumA2}`);
+
+  // 净值 = 原值 − 累计折旧
+  assert('净值口径 120000-2375=117625', netValue(120000, 2375) === 117625);
+  assert('净值不为负', netValue(100, 200) === 0);
+
+  // 处置分录平衡（损失）：原值 120000、累计 2375、收入 100000 → 净 117625、损失 17625
+  const l1 = buildDisposalLines({ originalValue: 120000, accrued: 2375, income: 100000, assetName: '货车' });
+  const d1 = round2(l1.filter((x) => x.direction === 'd').reduce((s, x) => s + x.amount, 0));
+  const c1 = round2(l1.filter((x) => x.direction === 'c').reduce((s, x) => s + x.amount, 0));
+  assert('处置损失分录借贷平衡', d1 === c1 && d1 === 120000, `d${d1} c${c1}`);
+  assert('损失入 6711 营业外支出', l1.some((x) => x.direction === 'd' && x.account_code === '6711' && x.amount === 17625));
+  assert('原值贷 1601', l1.some((x) => x.direction === 'c' && x.account_code === '1601' && x.amount === 120000));
+
+  // 处置分录平衡（收益）：原值 120000、累计 114000（提足）、收入 10000 → 净 6000、收益 4000
+  const l2 = buildDisposalLines({ originalValue: 120000, accrued: 114000, income: 10000, assetName: '货车' });
+  const d2 = round2(l2.filter((x) => x.direction === 'd').reduce((s, x) => s + x.amount, 0));
+  const c2 = round2(l2.filter((x) => x.direction === 'c').reduce((s, x) => s + x.amount, 0));
+  assert('处置收益分录借贷平衡', d2 === c2 && d2 === 124000, `d${d2} c${c2}`);
+  assert('收益入 6301 营业外收入', l2.some((x) => x.direction === 'c' && x.account_code === '6301' && x.amount === 4000));
+
+  // 处置（报废无收入）：原值 5000、累计 5000（提足）、收入 0 → 净 0、无损益
+  const l3 = buildDisposalLines({ originalValue: 5000, accrued: 5000, income: 0, assetName: '旧设备' });
+  const d3 = round2(l3.filter((x) => x.direction === 'd').reduce((s, x) => s + x.amount, 0));
+  const c3 = round2(l3.filter((x) => x.direction === 'c').reduce((s, x) => s + x.amount, 0));
+  assert('报废无损益分录平衡', d3 === c3 && d3 === 5000, `d${d3} c${c3}`);
+  assert('报废仅 1602+1601 两行', l3.length === 2);
 }
 
 console.log(`\n${passed} passed, ${failures} failed`);
