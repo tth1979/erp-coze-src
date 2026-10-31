@@ -7,7 +7,7 @@ import { listTaxSummary } from '@/server/tax/tax';
 export async function GET(request: NextRequest) {
   try {
     const { user } = await requireAuth(request);
-    requirePermission(user, 'fin.read');
+    requirePermission(user, 'tax.read');
     const result = await listTaxSummary();
     return ok({ items: result });
   } catch (error) {

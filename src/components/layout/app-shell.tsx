@@ -43,6 +43,9 @@ import {
   ReceiptText,
   Banknote,
   Waves,
+  FileText,
+  MapPin,
+  GitCompareArrows,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/components/auth/auth-provider';
@@ -134,8 +137,11 @@ const NAV: NavGroup[] = [
       { title: '试算平衡表', href: '/finance/trial-balance', icon: Percent, permission: 'fin.read' },
       { title: '财务报表', href: '/reports/pnl', icon: LineChart, permission: 'fin.read' },
       { title: '期末结账', href: '/finance/period-close', icon: CalendarCheck, permission: 'fin.read' },
-      { title: '税额统计', href: '/tax/taxes', icon: Percent, permission: 'fin.read' },
-      { title: '纳税申报', href: '/tax/filing', icon: FileBarChart, permission: 'fin.read' },
+      { title: '税额统计', href: '/tax/taxes', icon: Percent, permission: 'tax.read' },
+      { title: '纳税申报', href: '/tax/filing', icon: FileBarChart, permission: 'tax.read' },
+      { title: '发票台账', href: '/tax/invoices', icon: FileText, permission: 'tax.read' },
+      { title: '异地预缴', href: '/tax/prepaid', icon: MapPin, permission: 'tax.read' },
+      { title: '税会差异', href: '/tax/tax-diff', icon: GitCompareArrows, permission: 'tax.read' },
     ],
   },
   {

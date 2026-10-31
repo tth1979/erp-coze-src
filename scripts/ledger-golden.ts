@@ -9,6 +9,7 @@ import { computeClosing, sumTrial, pnlRevenue, pnlExpense, pnlNet, balanceEquali
 import { matchStatements, reconcile, netBalance, type ReconLine } from '../src/server/finance/bank-math';
 import { classifyActivity, sumActivities, directNetChange, reconcileIndirect, type CashMovement } from '../src/server/finance/cashflow-math';
 import { straightLineMonthly, periodDepreciation, netValue, buildDisposalLines } from '../src/server/finance/fixed-assets-math';
+import { invoiceTotal, taxFromExcl, socDiffAmount, computeWorksheet } from '../src/server/tax/tax-math';
 
 type Template = Pick<TemplateRow, 'template_code' | 'event_type' | 'spec' | 'balance_to'>;
 
@@ -381,6 +382,37 @@ console.log('\n— 固定资产折旧与处置 —');
   const c3 = round2(l3.filter((x) => x.direction === 'c').reduce((s, x) => s + x.amount, 0));
   assert('报废无损益分录平衡', d3 === c3 && d3 === 5000, `d${d3} c${c3}`);
   assert('报废仅 1602+1601 两行', l3.length === 2);
+}
+
+// 19. 税务增强：发票价税合计、税额反算、税会差异、申报底稿（预缴抵减）
+console.log('\n— 税务增强 —');
+{
+  // 发票价税合计
+  assert('价税合计 1000+130=1130', invoiceTotal({ amount_ex_tax: 1000, tax_amount: 130 }) === 1130);
+  // 按税率反算税额
+  assert('税额反算 1000×13%=130', taxFromExcl(1000, 13) === 130);
+  assert('税额反算 9090.91×9%=818.18', taxFromExcl(9090.91, 9) === 818.18);
+
+  // 税会差异 = 税法口径 − 会计口径（带符号）
+  assert('时间性差异 20000-15000=5000', socDiffAmount({ tax_base: 20000, accounting_base: 15000 }) === 5000);
+  assert('永久性差异 0-3000=-3000', socDiffAmount({ tax_base: 0, accounting_base: 3000 }) === -3000);
+
+  // 申报底稿：销项 17255、进项 11505 → 应纳 5750；预缴 5000 → 应补 750
+  const w1 = computeWorksheet({ output_tax: 17255, deductible_input: 11505, prepaid_total: 5000 });
+  assert('底稿 应纳=销-进 5750', w1.vat_before_prepaid === 5750);
+  assert('底稿 应补 750（抵预缴）', w1.net_payable === 750);
+  assert('底稿 无应退', w1.refundable === 0);
+  assert('底稿 无结转留抵', w1.carried_forward === 0);
+
+  // 预缴超额 → 应退
+  const w2 = computeWorksheet({ output_tax: 17255, deductible_input: 11505, prepaid_total: 8000 });
+  assert('预缴超额 应退 2250', w2.refundable === 2250);
+  assert('预缴超额 应补 0', w2.net_payable === 0);
+
+  // 进项大于销项 → 留抵
+  const w3 = computeWorksheet({ output_tax: 1000, deductible_input: 1800, prepaid_total: 0 });
+  assert('进>销 应纳 0', w3.vat_before_prepaid === 0);
+  assert('进>销 留抵 800', w3.carried_forward === 800);
 }
 
 console.log(`\n${passed} passed, ${failures} failed`);

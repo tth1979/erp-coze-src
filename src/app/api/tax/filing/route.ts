@@ -7,7 +7,7 @@ import { getTaxFiling } from '@/server/tax/tax';
 export async function GET(request: NextRequest): Promise<Response> {
   try {
     const { user } = await requireAuth(request);
-    requirePermission(user, 'fin.read');
+    requirePermission(user, 'tax.read');
     const period = request.nextUrl.searchParams.get('period')?.trim() || new Date().toISOString().slice(0, 7);
     if (!/^\d{4}-\d{2}$/.test(period)) return Response.json({ code: 'TAX.BAD_PERIOD', message: '期间格式应为 YYYY-MM' }, { status: 400 });
     const result = await getTaxFiling(period);

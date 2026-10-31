@@ -7,7 +7,7 @@ import { listTaxEntries } from '@/server/tax/tax';
 export async function GET(request: NextRequest) {
   try {
     const { user } = await requireAuth(request);
-    requirePermission(user, 'fin.read');
+    requirePermission(user, 'tax.read');
     const sp = request.nextUrl.searchParams;
     const page = Math.max(1, Number(sp.get('page')) || 1);
     const pageSize = Math.min(100, Math.max(1, Number(sp.get('pageSize')) || 20));

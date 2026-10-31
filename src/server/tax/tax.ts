@@ -5,6 +5,9 @@
  */
 import { ApiError } from "@/server/http";
 import { getSupabaseClient } from "@/storage/database/supabase-client";
+import { computeWorksheet } from "./tax-math";
+import { prepaidTotalByPeriod } from "./prepaid";
+import { socDiffSummary } from "./soc-diff";
 
 export const TAX_OUTPUT = 'output';
 export const TAX_INPUT = 'input';
@@ -30,6 +33,19 @@ export interface TaxFilingView {
   vat_payable: number;
   /** 留抵税额 = 可抵扣进项 − 销项（≥0） */
   carried_forward: number;
+  /** 异地预缴税额合计（抵减应纳税额） */
+  prepaid_total: number;
+  /** 应补(退)税额 = 应纳 − 预缴（>0 应补，<0 应退） */
+  net_payable: number;
+  /** 应退税额 = max(预缴 − 应纳, 0) */
+  refundable: number;
+  /** 税会差异提示（时间性/永久性） */
+  soc_diff: {
+    temporary_count: number;
+    temporary_amount: number;
+    permanent_count: number;
+    permanent_amount: number;
+  };
   rows: TaxFilingRow[];
 }
 
@@ -84,6 +100,8 @@ export async function getTaxFiling(period: string): Promise<TaxFilingView> {
 
   const deductible = round2(input_tax);
   const diff = round2(output_tax - deductible);
+  const [prepaid, socDiff] = await Promise.all([prepaidTotalByPeriod(period), socDiffSummary(period)]);
+  const ws = computeWorksheet({ output_tax, deductible_input: deductible, prepaid_total: prepaid });
   return {
     period,
     output_amount: round2(output_amount),
@@ -95,6 +113,10 @@ export async function getTaxFiling(period: string): Promise<TaxFilingView> {
     deductible_input: deductible,
     vat_payable: Math.max(diff, 0),
     carried_forward: Math.max(-diff, 0),
+    prepaid_total: ws.prepaid_total,
+    net_payable: ws.net_payable,
+    refundable: ws.refundable,
+    soc_diff: socDiff,
     rows: [...rows.values()],
   };
 }

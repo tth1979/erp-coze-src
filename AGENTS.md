@@ -58,7 +58,7 @@
 | 系统字典模块（周边，V1） | `dict_*` | 字典类型+字典项（计量单位/付款方式/税率/客户等级/状态），种子预置、供下拉引用 |
 | 计量单位（周边，V1） | `md_units` | 基础资料扩充：计量单位档案 + 基准单位+换算系数 |
 | 加工模块（已交付 V1） | `ma_*` | 加工单 MO（类型/损耗/投入产出）+ 四级审批 + 分批领料/分批完工 + 加工成本雏形（按投入均价分摊入成品） |
-| 后续业务模块（预留） | `proc_*` / `tax_*` | 税务 |
+| 税务模块（已交付 V2 增强） | `tax_*` | 进/销项税登记 + 发票台账 + 异地预缴 + 税会差异 + 申报底稿 |
 
 > 托管 PostgREST 仅暴露 public schema，故以表名前缀实现"单库逻辑多 schema"隔离。
 
@@ -161,9 +161,17 @@
 | POST | /api/fin/periods/[period]/reopen | fin.write | 反结账留痕 {reason}：closed→open 解锁，记录谁/何时/原因（日志不可删） |
 | POST | /api/fin/periods/[period]/year-close | fin.write | 年结：关全年各月+本年利润→未分配利润4104+资产/负债/权益结转次年期初，置 annual_closed |
 | GET | /api/fin/periods/[period]/logs | fin.read | 期间结账/结转/反结账/年结留痕日志（仅追加） |
-| GET | /api/tax/entries | fin.read | 税额登记分页（tax_type/period/keyword = 单号模糊） |
-| GET | /api/tax/summary | fin.read | 期间×税率税额统计（销项/进项 金额·计税基数·税额，内存聚合） |
-| GET | /api/tax/filing?period=YYYY-MM | fin.read | 增值税纳税申报主表数据来源：按期间销项/进项 + vat_payable/carried_forward（留抵） |
+| GET | /api/tax/entries | tax.read | 税额登记分页（tax_type/period/keyword = 单号模糊） |
+| GET | /api/tax/summary | tax.read | 期间×税率税额统计（销项/进项 金额·计税基数·税额，内存聚合） |
+| GET | /api/tax/filing?period=YYYY-MM | tax.read | 增值税纳税申报（含增强字段：prepaid_total/net_payable/refundable/soc_diff 差异提示） |
+| GET/POST | /api/tax/invoices | tax.read / tax.write | 发票台账分页列表（direction/invoice_type/status/period/keyword）/ 录入（direction+invoice_no 唯一 409，金额非负校验） |
+| GET/PUT/DELETE | /api/tax/invoices/[id] | tax.read / tax.write | 发票详情 / 更新（filed 禁改 400）/ 删除（filed 禁删，作废可删） |
+| POST | /api/tax/invoices/[id]/mark | tax.write | 勾选认证/标记申报/作废：pending→checked→filed，任意→void（filed 不可直接改） |
+| GET/POST | /api/tax/prepaid | tax.read / tax.write | 异地预缴分页列表（period/keyword=工程/地区）/ 登记（prepaid_amount>0） |
+| DELETE | /api/tax/prepaid/[id] | tax.write | 作废预缴（置 void，不再计入底稿抵减） |
+| GET/POST | /api/tax/soc-diff | tax.read / tax.write | 税会差异分页列表（period/diff_type/keyword）/ 登记（diff_amount 服务端=税法−会计） |
+| DELETE | /api/tax/soc-diff/[id] | tax.write | 删除差异登记 |
+| GET | /api/tax/worksheet?period=YYYY-MM | tax.read | 申报底稿：销项/进项/应纳/预缴抵减/应补(退)/留抵 + sources 五类来源 + soc_diff 统计 |
 | POST | /api/fin/vouchers/period-close | admin / fin.write | 期末成本结转批处理 { period }，幂等补生成成本凭证，返回新增计数 |
 | GET/POST | /api/fin/expenses | fin.read / fin.write | 费用报销单分页列表（status/period/keyword=单号/报销人）/ 新建草稿（服务端重算价税分离） |
 | GET/PUT/DELETE | /api/fin/expenses/[id] | fin.read / fin.write | 报销单详情（含明细+审批步骤）/ 更新（draft/rejected）/ 删除（仅 draft） |
@@ -265,7 +273,7 @@
 - **红字冲销**：`POST /api/fin/vouchers/[id]/void` 仅对已过账(unvoid)凭证——原凭证 status→void，自动生成等额反号红冲凭证（event_type=void、source=redline），旧凭证与红冲凭证均不可再红冲（400）。DELETE 仅限 status=draft（未过账）且无红冲凭证。
 - **税额统计**：`GET /api/tax/summary` 按(period,tax_rate) 内存聚合 output/input 的金额/计税基数/税额，为报税提供口径（SDK-only，不建视图；不做完整申报）。
 - **正确性回归**：`scripts/ledger-golden.ts`（`pnpm tsx scripts/ledger-golden.ts`）纯函数 23 条断言（buildVoucherEntries 借贷平衡/尾差归集/五模板分录、含税拆分、多税率），CI 必跑。
-- **权限**：凭证与税务读 `fin.read`（staff 只读）、红冲/删除/税额写 `fin.write`（manager）。
+- **权限**：凭证读 `fin.read`（staff 只读）、红冲/删除 `fin.write`（manager）；税务自 0019 起用独立权限点 `tax.read`/`tax.write`（见税务增强节）。
 - **前端**：`/finance/vouchers`（凭证列表：日期/状态筛选、查看借贷行明细、行内红冲）、`/tax/taxes`（期间×税率税额汇总 + 登记明细）；导航「财务→记账凭证、税务→税额统计」。
 
 ### 会计科目 + 凭证管理增强（fin_subjects，0015）
@@ -329,10 +337,20 @@
   - **前端/导航**：`/finance/fixed-assets`（列表+类别/状态筛选+`fixed-asset-form-dialog`新建（实时月折旧预览）+`fixed-asset-detail-sheet`详情含折旧进度条/折旧历史/处置弹层（实时损益测算））、`/finance/depreciation`（汇总卡片+选期间执行计提+本次明细+折旧历史）；导航「固定资产(Landmark)、折旧计提(Calculator)」入财务组。
   - **纯函数测试**：golden 新增直线法(含残值)/最后月归零兜底/净值口径/处置损失与收益与报废三种平衡用例（共 86 passed）。
 
+- **税务增强**（发票台账/异地预缴/税会差异/申报底稿，迁移 `0019_tax_enhance.sql`，`src/server/tax/{invoices,prepaid,soc-diff,worksheet}.ts` + 纯函数 `tax-math.ts`）：
+  - **表**：`tax_invoices`（invoice_type special/normal、direction input/output、invoice_date→period 自动取值、amount_ex_tax/tax_amount/amount_total=excl+tax、rate、related_bill、supplier/customer_name、status pending待勾选/checked已勾选/filed已申报/void已作废，**UNIQUE(direction, invoice_no)**）；`tax_prepaid`（period、project、region、prepaid_amount、based_tax、prepaid_date、status active/void）；`tax_soc_diff`（period、diff_type temporary/permanent、item、tax_base/accounting_base、diff_amount=税法−会计服务端算）。三表 RLS。
+  - **发票流转**：pending→checked（勾选认证）→filed（标记申报），任意状态→void；filed 禁改禁删（400），void 可删；同方向重号 409（TAX.INVOICE_DUP）。
+  - **申报底稿** `GET /api/tax/worksheet?period=`（`getWorksheet`）：以 `getTaxFiling` 销项/进项为基，`vat_before_prepaid=max(销−进,0)`、`carried_forward=max(进−销,0)`；叠加 active 预缴合计 → `net_payable=max(应纳−预缴,0)` 应补 / `refundable=max(预缴−应纳,0)` 应退（纯函数 `computeWorksheet`）；`sources` 五类来源计数（tax_entries 销/进项、发票台账、预缴、差异）；`soc_diff` 输出时间性/永久性笔数与金额。
+  - **filing 增强**：`getTaxFiling` 返回 superset 追加 `prepaid_total/net_payable/refundable/soc_diff`（前端 `/tax/filing` 展示「已抵预缴/应补(退)/差异提示」卡）。
+  - **差异口径**：日常只做**时间性**差异提示（bottomline 汇算清缴时处理**永久性**），`socDiffAmount=税法−会计`（正=税法多计）。
+  - **权限**：新增 `tax.read`/`tax.write` 权限点（admin=*；manager 读写；staff 只读）；既有 `/api/tax/entries|summary|filing` 同步由 fin.read 切至 tax.read（访问面不变）；匿名 401。
+  - **前端/导航**：`/tax/invoices`（台账+方向/类型/状态筛选+录入弹窗（价税合计实时预览）+行内勾选/申报/作废/删除）、`/tax/prepaid`（登记+作废）、`/tax/tax-diff`（登记+类型统计卡）；导航「税务」组新增 发票台账(FileText)/异地预缴(MapPin)/税会差异(GitCompareArrows)，税额统计权限点同步 tax.read。
+  - **纯函数测试**：golden 新增价税合计/税率反算/税会差异符号/底稿应补·应退·留抵口径用例（共 99 passed）。
+
 - **成本结转两套模板（迁移 0013，幂等种子）**：`MANUFACTURE_FINISH`（event=manufacture_finish，借 1405 库存商品 `#amount` / 贷 5101 生产成本—加工归集 `#amount`）与 `SALES_SHIPMENT_COST`（event=sales_cof_shipment，借 6401 主营业务成本 `#amount` / 贷 1405 库存商品 `#amount`）；均 `balance_to=6601 管理费用`。`src/server/ledger/events.ts` 新增 `onSalesShipmentCost` / `onManufactureFinish`（按 (event_type,event_id) 幂等）。
 - **接入点**：`sales/shipments.ts#approveShipment` 与 `sales/orders.ts#completeOrder`（一键发货）终审出库后生成销售成本凭证（cost=单头 `total_cost`）；`processing.ts#finishManufacturing` 在加工单 →completed 后生成加工完工成本凭证（cost=`issued_cost` 投入成本，差额按损耗处理）。
 - **期末成本结转批处理**：`src/server/ledger/period-close.ts#closePeriodCostTransfer(period, operatorId)` 扫描期间内 `so_shipments.status=approved`（按 approved_at）与 `ma_* status=completed`（按 updated_at），对缺失凭证幂等补生成；`POST /api/fin/vouchers/period-close {period}`（admin 或 fin.write），返回 `{shipment_cost, manufacture_finish}` 新增计数（二次执行为 0）。
-- **纳税申报雏形**：`src/server/tax/tax.ts#getTaxFiling(period)` 按期间聚合 `tax_entries` → 销项/进项 金额·基数·税额，`deductible_input=进项税`（雏形默认全可抵扣）、`vat_payable=max(销项−可抵扣,0)`、`carried_forward=max(可抵扣−销项,0)`，并分税率 rows；`GET /api/tax/filing?period=YYYY-MM`（fin.read，校验格式）→ 页面 `/tax/filing`（导航「税务→纳税申报」）；`md_products.tax_rate` 已贯穿 create/update zod schema + normalize（数字，>0，缺省 13），确保写读路径生效。
+- **纳税申报雏形**：`src/server/tax/tax.ts#getTaxFiling(period)` 按期间聚合 `tax_entries` → 销项/进项 金额·基数·税额，`deductible_input=进项税`（雏形默认全可抵扣）、`vat_payable=max(销项−可抵扣,0)`、`carried_forward=max(可抵扣−销项,0)`，并分税率 rows（0019 起返回 superset 追加预缴/应补退/差异提示字段，见税务增强节）；`GET /api/tax/filing?period=YYYY-MM`（tax.read，校验格式）→ 页面 `/tax/filing`（导航「税务→纳税申报」）；`md_products.tax_rate` 已贯穿 create/update zod schema + normalize（数字，>0，缺省 13），确保写读路径生效。
 - **按单核销前端**：`fin_payments` 本已支持 `order_id`（收款=销售订单=应收单、付款=采购订单=应付单）；`FinBillRow` 服务端(payments.ts#listBills)与 `src/lib/types.ts` 补 `order_id`；`fin-bills.tsx` 应收/应付单表格升级为复选框多选（open 行）+ 按所选核销 + 每行核销按钮；`payment-form-dialog.tsx` 支持 `bills?: FinBillRow[]` 多单分摊登记（先扣 outstanding 大者），前端校验合计 ≤ 所选 outstanding，服务端靠 `fin_apply_receipt/payment` 超额拦截兜底（400 `FIN.OVER_AMOUNT`）。
 - **PDA 扫码出入库**：`/m/pda/stock-io`（'use client'，采购入库 GR / 销售出库 SH 双 Tab）弱耦合只读复用 `GET /api/po/receipts`、`GET /api/so/shipments`（列表，draft/pending/approved）与 `GET ...[id]`（明细含 `product_sku`）；扫描/输入条码按 `product_sku`（或品名含）匹配明细并高亮核对计数，本地确认汇总、**不新增端点/不落数据**。`/m/` 首页新增「扫码出入库」卡片、底部导航 `grid-cols-5` 补「出入库」。
 
@@ -405,7 +423,7 @@ src/
 │   ├── inventory/           # 库存服务（stock 余额/warehouses 仓库/batches 批次/alerts 预警/movements 流水/transfers 调拨/checks 盘点/RPC 错误映射）
 │   ├── finance/             # 财务服务（payments 收付款单 CRUD + 应收/应付欠款汇总 + 超额校验 + subjects 科目字典/余额/试算平衡 + reports 利润表/资产负债表 + period-close 期末结账/结转损益/反结账/年结 + period-guard 期间锁定）
 │   ├── ledger/              # 凭证引擎（ledger 模板+平衡+幂等+红冲 / events 业务事件接入层 computeItemsTax+fetchName）
-│   ├── tax/                 # 税务（tax 销项/进项登记 + 期间×税率税额统计）
+│   ├── tax/                 # 税务（tax 进/销项登记+filing 汇总增强 / invoices 发票台账 / prepaid 异地预缴 / soc-diff 税会差异 / worksheet 申报底稿 / tax-math 纯函数）
 │   ├── reporting/           # 报表服务（overview 汇总卡片+趋势 / purchase / sales / inventory 分组聚合 / parse/shared）
 │   └── dict/                # 系统字典（dict.ts：类型/项的查询校验序列化 + lookup 引用）
 ├── app/api/                 # Route Handlers（薄层，调 server 服务）
@@ -429,7 +447,7 @@ src/
 │   └── finance/                 # 财务通用：欠款汇总列表(kind 区分应收应付) / 收付款登记对话框 / 凭证/税务页面组件
 ├── lib/                     # api-client / types / use-paged-list(支持 filters)
 └── storage/database/        # supabase-client.ts + shared/schema.ts
-db/migrations/               # 版本化 SQL（0001 基础+认证 / 0002 采购 / 0003 销售 / 0004 库存 / 0005 财务 / 0006 采购 V2 五单+审批+成本+冲回 / 0007 销售 V2 出库+退货+等级报价 / 0008 库存 V2 多仓+批次+调拨+盘点+预警 / 0009 周边：系统字典 dict_* + 计量单位 md_units / 0010 财务 V2 应收应付核销 / 0011 财务凭证引擎+税务 / 0012 加工 ma_* / 0013 成本结转凭证 / 0014 PDA 移动端零迁移 / 0015 会计科目 fin_subjects/凭证手工记账 / 0016 期末结账：fin_accounting_periods 期间状态表(open/closed/annual_closed+locked+结转损益凭证号+结账/反结账留痕) + fin_period_logs 留痕日志表(仅INSERT) + 本年利润4103/未分配利润4104/所得税费用6402/税金及附加6403 种子 / 0017 费用报销 fin_expense_claims(+items)+ 银行对账单 fin_bank_statements + 其他应付款2241 种子 + expense 审批规则 / 0018 固定资产 fin_fixed_assets + 折旧记录 fin_depreciation_records(UNIQUE(asset_id,period)) + 6301/6711 种子 + fin_vouchers.event_id 扩宽 36→64）
+db/migrations/               # 版本化 SQL（0001 基础+认证 / 0002 采购 / 0003 销售 / 0004 库存 / 0005 财务 / 0006 采购 V2 五单+审批+成本+冲回 / 0007 销售 V2 出库+退货+等级报价 / 0008 库存 V2 多仓+批次+调拨+盘点+预警 / 0009 周边：系统字典 dict_* + 计量单位 md_units / 0010 财务 V2 应收应付核销 / 0011 财务凭证引擎+税务 / 0012 加工 ma_* / 0013 成本结转凭证 / 0014 PDA 移动端零迁移 / 0015 会计科目 fin_subjects/凭证手工记账 / 0016 期末结账：fin_accounting_periods 期间状态表(open/closed/annual_closed+locked+结转损益凭证号+结账/反结账留痕) + fin_period_logs 留痕日志表(仅INSERT) + 本年利润4103/未分配利润4104/所得税费用6402/税金及附加6403 种子 / 0017 费用报销 fin_expense_claims(+items)+ 银行对账单 fin_bank_statements + 其他应付款2241 种子 + expense 审批规则 / 0018 固定资产 fin_fixed_assets + 折旧记录 fin_depreciation_records(UNIQUE(asset_id,period)) + 6301/6711 种子 + fin_vouchers.event_id 扩宽 36→64 / 0019 税务增强：tax_invoices 发票台账(UNIQUE(direction,invoice_no)) + tax_prepaid 异地预缴 + tax_soc_diff 税会差异）
 scripts/seed-dev.ts          # DEV 测试账号种子
 ```
 
