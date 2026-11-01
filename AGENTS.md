@@ -57,6 +57,7 @@
 | 报表模块（周边，V1） | `report_*`（无独立表，SDK 只读聚合） | 经营统计：汇总卡片/采购/销售/库存报表，dashboard 趋势图 |
 | 系统字典模块（周边，V1） | `dict_*` | 字典类型+字典项（计量单位/付款方式/税率/客户等级/状态），种子预置、供下拉引用 |
 | 系统管理模块（已交付 V1） | `sys_*`（复用前缀） | 四粒度权限（sys_roles/sys_role_permissions/sys_user_roles）+ 参数中心 sys_settings + 审计日志 sys_audit_logs（只追加）+ 审批流配置（复用 po_approval_rules） |
+| 数据一致性+备份模块（已交付 V1） | `sys_*`（复用前缀） | sys_integrity_checks（七断言跑批，只追加）+ sys_backups（真实快照 payload jsonb）+ fail 阻断期末结账（可配置） |
 | 计量单位（周边，V1） | `md_units` | 基础资料扩充：计量单位档案 + 基准单位+换算系数 |
 | 加工模块（已交付 V1） | `ma_*` | 加工单 MO（类型/损耗/投入产出）+ 四级审批 + 分批领料/分批完工 + 加工成本雏形（按投入均价分摊入成品） |
 | 税务模块（已交付 V2 增强） | `tax_*` | 进/销项税登记 + 发票台账 + 异地预缴 + 税会差异 + 申报底稿 |
@@ -220,6 +221,12 @@
 | GET | /api/system/audit-logs | sys.read | 审计日志分页（action/resource/user/时间范围/keyword，只读无写端点） |
 | GET | /api/system/approval-rules | sys.read | 审批规则列表（含步骤，按 doc_type+level，返回 doc_types） |
 | PUT | /api/system/approval-rules/[id] | sys.write | 审批规则更新：金额区间+步骤序列全量替换（角色校验 400，写审计） |
+| POST/GET | /api/system/integrity/run | sys.write / sys.read | 触发一致性跑批 {group:startup/daily/manual}（写审计）/ 断言目录+分组 |
+| GET | /api/system/integrity/checks | sys.read | 断言历史分页（run_id/check_key/result/group 过滤，含 catalog+blocking） |
+| GET | /api/system/integrity/export | sys.read | 断言历史 CSV 导出（同过滤参数） |
+| GET/POST | /api/system/backups | sys.read / sys.write | 备份历史分页 / 触发备份 {type:full\|partial, scope:[分组], note}（真实快照，写审计） |
+| GET | /api/system/backups/[id] | sys.read | 备份详情（含 table_stats+恢复指引 restore_guide） |
+| GET | /api/system/backups/[id]/export | sys.read | 快照 JSON 下载（meta+payload 全表数据） |
 
 分页参数：`page`(≥1) `pageSize`(1-100) `keyword`（模糊搜索）；响应 `{ items, total, page, page_size }`。
 
@@ -370,6 +377,16 @@
   - **权限点**：新增 `sys.read`（admin/manager）/ `sys.write`（admin/manager）/ `field.cost_price`（admin/manager）/ `field.customer_phone`（admin/manager）；staff 对 /api/system/* 全 403；匿名 401。
   - **前端/导航**：`/system/roles`（角色列表+新建/编辑弹窗+权限点四粒度勾选面板+用户-角色分配与部门调整）、`/system/settings`（分组卡片+新建/编辑弹窗，值类型校验提示+敏感锁标识）、`/system/audit-logs`（操作/资源/用户/时间范围筛选+详情 JSON 弹层）、`/system/approval-flows`（按单据类型分组的档位卡片+编辑弹窗步骤序列）；导航「系统设置」组新增 角色权限(ShieldCheck)/参数中心(SlidersHorizontal)/审批流配置(GitBranch)/审计日志(ScrollText)，均 sys.read。
   - **冒烟**：/tmp/system_mgmt_smoke.py 53 项——角色 CRUD/code409/权限配置、staff 分配自定义角色后并集获得 po.write+数据范围 self+成本价可见（回收后还原）、越权 md.write 仍 403、self 范围看不到他人单据、手机号脱敏置 null、参数 key409/坏值400/敏感 manager403、审计写入+无删除端点、审批规则更新/非法角色400、四页面 200、既有模块回归；golden 第 20 节 33 用例（共 160 passed）。
+
+- **数据一致性断言跑批+系统备份**（迁移 `0021_integrity_backup.sql`，`src/server/system/{integrity-math,integrity,backups}.ts`，页面 `/system/{integrity,backups}`）：
+  - **表**：`sys_integrity_checks`（run_id 分组、check_group startup/daily/manual、check_key、result pass/fail/warn、severity、failure_type、detail jsonb；只追加触发器 P0403）；`sys_backups`（backup_no BKP+yyyymmdd-NNNN 唯一、type full/partial、scope jsonb、table_stats{rows,sha256}、total_rows、size_bytes、payload jsonb 真实快照、status success/failed；只追加）；两表 RLS；种子 `integrity.block_period_close=true`、`integrity.value_recon.severity=warn`、`backup.default_scope`。
+  - **七断言**（`integrity-math.ts` 纯函数 + `integrity.ts` 编排取数落库，`runIntegrityChecks(group)` 可由日程/脚本调用，`ASSERTION_CATALOG`）：quantity_state（四态非负+可用=现有−冻结）、batch_closure（Σ批次 remaining==stock.quantity 按商品×仓，含孤儿批次；历史 LEGACY-INIT 批次已补齐修复）、ledger_conservation（台账链 prev.balance+chg==balance 全链守恒+链末==库存+余额非负；**同事务同时间戳行按余额链贪心还原顺序**）、doc_no_unique（14 表全局单号查重）、value_recon（行级 avg_cost≈total_cost/quantity 容差随数量缩放 + GL1405 勾稽；severity 默认 warn 可配）、voucher_balance（Σ借==Σ贷，**direction 存 d/c 短码**）、ar_ap_recon（应收应付按 payments.ts 口径汇总，负余额 fail）。`severityOf(key)` 读 sys_settings `integrity.<key>.severity`，fail 级未过=blocking。
+  - **fail 阻断结账**：`src/server/finance/period-close.ts#assertIntegrityBeforeClose` 在 closePeriod 内 ensurePeriod 后调用——开关开启时先跑 manual 校验，存在 fail 级断言抛 409 `SYS.INTEGRITY_BLOCKED`（附 run_id）；开关=`integrity.block_period_close`。
+  - **备份**：`BACKUP_SCOPE_GROUPS` 9 组（md/po/so/inv/fin/tax/ma/sys/dict 全表清单）；`createBackup` 逐表全量读取（分页 1000，单表上限 50000 行防溢出）真实落 `payload` jsonb，失败记 status=failed 行（不伪造成功）；`tableSha256`（行 JSON 排序逐行哈希）写入 table_stats 供校验；`exportBackupPayload` 输出 {meta, payload} 完整快照 JSON；详情含 `RESTORE_GUIDE` 7 步运维恢复指引（恢复为人工运维操作，不自动覆盖）。
+  - **前端/导航**：`/system/integrity`（一键跑批+汇总卡片 pass/fail/warn+历史表 run_id/结果/严重级别筛选+详情 Dialog+CSV 导出）、`/system/backups`（创建 Dialog 全量/按需+9 组 Checkbox+历史表+详情 table_stats/sha256+恢复指引+快照下载）；导航「系统设置」组新增 数据一致性(ShieldAlert)/系统备份(DatabaseBackup)，均 sys.read。
+  - **冒烟**：`scripts/integrity-backup-smoke.py`（工作区内，/tmp 易清理）57 项——staff403/匿名401、七断言全 pass、历史/过滤、手工凭证接口强制平衡 400（造错入口已由接口同源约束拦截）、已结账期间重复结账 400、备份 full/partial/缺 scope400/未知分组400、历史/详情/导出快照行数一致/含恢复指引、审计留痕、页面 200、既有模块回归；golden 第 21 节 27 用例（共 187 passed）。
+  - **历史数据修复**：批次体系前遗留库存（首批台账 balance=101 但批次合计=2 类）已通过一次性 SQL 补录 `LEGACY-INIT` 批次（36 行，initial=remaining=缺口量，unit_cost=当时 avg_cost），使 batch_closure 断言对真实数据通过。
+
 
 - **成本结转两套模板（迁移 0013，幂等种子）**：`MANUFACTURE_FINISH`（event=manufacture_finish，借 1405 库存商品 `#amount` / 贷 5101 生产成本—加工归集 `#amount`）与 `SALES_SHIPMENT_COST`（event=sales_cof_shipment，借 6401 主营业务成本 `#amount` / 贷 1405 库存商品 `#amount`）；均 `balance_to=6601 管理费用`。`src/server/ledger/events.ts` 新增 `onSalesShipmentCost` / `onManufactureFinish`（按 (event_type,event_id) 幂等）。
 - **接入点**：`sales/shipments.ts#approveShipment` 与 `sales/orders.ts#completeOrder`（一键发货）终审出库后生成销售成本凭证（cost=单头 `total_cost`）；`processing.ts#finishManufacturing` 在加工单 →completed 后生成加工完工成本凭证（cost=`issued_cost` 投入成本，差额按损耗处理）。

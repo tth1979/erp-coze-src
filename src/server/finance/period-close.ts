@@ -13,6 +13,21 @@ import { throwDbError } from '@/server/master-data/helpers';
 import { findVoucherByEvent, nextVoucherNo, EVENT_PERIOD_PROFIT_CLOSE, EVENT_YEAR_TO_RETAINED } from '@/server/ledger/ledger';
 import { accountFlowsBetween, getSubjectBalances, getTrialBalance, loadSubjects } from '@/server/finance/subjects';
 import { round2 } from '@/server/ledger/balance-math';
+import { isBlockPeriodCloseEnabled, runIntegrityChecks } from '@/server/system/integrity';
+
+/** 期末结账前的数据一致性断言：存在 fail 级断言即阻断（参数中心可关闭） */
+async function assertIntegrityBeforeClose(): Promise<void> {
+  if (!(await isBlockPeriodCloseEnabled())) return;
+  const run = await runIntegrityChecks('manual');
+  const failures = run.results.filter((r) => r.result === 'fail' && r.severity === 'fail');
+  if (failures.length > 0) {
+    throw new ApiError(
+      409,
+      'SYS.INTEGRITY_BLOCKED',
+      `数据一致性校验未通过，禁止期末结账：${failures.map((f) => f.name).join('；')}。请先修复后重跑校验（run_id=${run.run_id}），或在参数中心关闭 integrity.block_period_close`,
+    );
+  }
+}
 
 type VoucherDirection = 'd' | 'c';
 
@@ -208,6 +223,8 @@ export async function getClosePeriods(): Promise<PeriodCloseItem[]> {
 export async function closePeriod(period: string, operatorId: string): Promise<{ period: string; profit_close: string | null }> {
   const row = await ensurePeriod(period);
   if ((row.status as string) !== 'open') throw new ApiError(400, 'FIN.PERIOD_NOT_OPEN', '该期间已结账或非 open，无法重复结账');
+  // 数据一致性断言：fail 级断言阻断结账（参数中心 integrity.block_period_close 可关闭）
+  await assertIntegrityBeforeClose();
   const profit = await closeProfit(period, operatorId);
   const patch: Record<string, unknown> = {
     status: 'closed',

@@ -50,6 +50,8 @@ import {
   SlidersHorizontal,
   GitBranch,
   ScrollText,
+  ShieldAlert,
+  DatabaseBackup,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAuth } from '@/components/auth/auth-provider';
@@ -168,6 +170,8 @@ const NAV: NavGroup[] = [
       { title: '参数中心', href: '/system/settings', icon: SlidersHorizontal, permission: 'sys.read' },
       { title: '审批流配置', href: '/system/approval-flows', icon: GitBranch, permission: 'sys.read' },
       { title: '审计日志', href: '/system/audit-logs', icon: ScrollText, permission: 'sys.read' },
+      { title: '数据一致性', href: '/system/integrity', icon: ShieldAlert, permission: 'sys.read' },
+      { title: '系统备份', href: '/system/backups', icon: DatabaseBackup, permission: 'sys.read' },
     ],
   },
 ];

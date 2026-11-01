@@ -19,6 +19,11 @@ import {
   PERMISSION_CATALOG,
 } from '../src/server/auth/permissions';
 import { validateValueByType } from '../src/server/system/settings';
+import {
+  evalQuantityState, evalBatchClosure, evalLedgerConservation, evalDocNoUnique,
+  evalValueRecon, evalVoucherBalance, evalArApRecon, summarizeRun,
+} from '../src/server/system/integrity-math';
+import { tableSha256, buildTableStats, totalRowsOf, resolveScopeTables } from '../src/server/system/backups';
 
 type Template = Pick<TemplateRow, 'template_code' | 'event_type' | 'spec' | 'balance_to'>;
 
@@ -506,6 +511,152 @@ console.log('\n— 系统管理 —');
   for (const p of listPermissions('staff')) {
     assert(`staff 内置点 ${p} 在目录中`, catalogKeys.has(p));
   }
+}
+
+// ---------------------------------------------------------------------------
+// 21) 数据一致性断言 + 系统备份（0021）
+// ---------------------------------------------------------------------------
+{
+  // 数量四态：正常行 pass
+  const qtyPass = evalQuantityState([
+    { product_id: 'P1', warehouse_id: 'WH01', quantity: 100, frozen_quantity: 20, in_transit: 5 },
+    { product_id: 'P2', warehouse_id: 'WH01', quantity: 0, frozen_quantity: 0, in_transit: 0 },
+  ]);
+  assert('数量四态-正常 pass', qtyPass.result === 'pass');
+  // 锁定超现有 → fail
+  const qtyFail = evalQuantityState([
+    { product_id: 'P1', warehouse_id: 'WH01', quantity: 10, frozen_quantity: 30, in_transit: 0 },
+  ]);
+  assert('数量四态-锁定超现有 fail', qtyFail.result === 'fail' && qtyFail.failureType === 'QTY_STATE_MISMATCH');
+  // 在途为负 → fail
+  const qtyNeg = evalQuantityState([
+    { product_id: 'P1', warehouse_id: 'WH01', quantity: 5, frozen_quantity: 0, in_transit: -2 },
+  ]);
+  assert('数量四态-在途为负 fail', qtyNeg.result === 'fail');
+
+  // 批次结存：闭合 pass；不闭合 fail；孤儿批次 fail
+  const stocks = [
+    { product_id: 'P1', warehouse_id: 'WH01', quantity: 100, frozen_quantity: 0, in_transit: 0 },
+    { product_id: 'P2', warehouse_id: 'WH01', quantity: 50, frozen_quantity: 0, in_transit: 0 },
+  ];
+  const batchPass = evalBatchClosure(stocks, [
+    { product_id: 'P1', warehouse_id: 'WH01', remaining_quantity: 60, unit_cost: 10 },
+    { product_id: 'P1', warehouse_id: 'WH01', remaining_quantity: 40, unit_cost: 12 },
+    { product_id: 'P2', warehouse_id: 'WH01', remaining_quantity: 50, unit_cost: 8 },
+  ]);
+  assert('批次结存-闭合 pass', batchPass.result === 'pass');
+  const batchFail = evalBatchClosure(stocks, [
+    { product_id: 'P1', warehouse_id: 'WH01', remaining_quantity: 90, unit_cost: 10 },
+  ]);
+  assert('批次结存-不闭合 fail', batchFail.result === 'fail' && batchFail.failureType === 'BATCH_CLOSURE_MISMATCH');
+  const batchOrphan = evalBatchClosure(stocks, [
+    { product_id: 'P1', warehouse_id: 'WH01', remaining_quantity: 100, unit_cost: 10 },
+    { product_id: 'P2', warehouse_id: 'WH01', remaining_quantity: 50, unit_cost: 8 },
+    { product_id: 'P9', warehouse_id: 'WH99', remaining_quantity: 3, unit_cost: 1 },
+  ]);
+  assert('批次结存-孤儿批次 fail', batchOrphan.result === 'fail');
+
+  // 台账守恒：prev.balance+chg=balance 链式 + 链末=库存
+  const ledgerOk = evalLedgerConservation([
+    { id: '1', product_id: 'P1', warehouse_id: 'WH01', quantity: 100, balance: 100, ref_no: 'GR-1', created_at: '2026-01-01T00:00:00Z' },
+    { id: '2', product_id: 'P1', warehouse_id: 'WH01', quantity: -30, balance: 70, ref_no: 'SH-1', created_at: '2026-01-02T00:00:00Z' },
+  ], [{ product_id: 'P1', warehouse_id: 'WH01', quantity: 70, frozen_quantity: 0, in_transit: 0 }]);
+  assert('台账守恒-链式正确 pass', ledgerOk.result === 'pass');
+  const ledgerBroken = evalLedgerConservation([
+    { id: '1', product_id: 'P1', warehouse_id: 'WH01', quantity: 100, balance: 100, ref_no: 'GR-1', created_at: '2026-01-01T00:00:00Z' },
+    { id: '2', product_id: 'P1', warehouse_id: 'WH01', quantity: -30, balance: 65, ref_no: 'SH-1', created_at: '2026-01-02T00:00:00Z' },
+  ], [{ product_id: 'P1', warehouse_id: 'WH01', quantity: 70, frozen_quantity: 0, in_transit: 0 }]);
+  assert('台账守恒-断链 fail', ledgerBroken.result === 'fail' && ledgerBroken.failureType === 'LEDGER_CHAIN_BROKEN');
+  const ledgerTail = evalLedgerConservation([
+    { id: '1', product_id: 'P1', warehouse_id: 'WH01', quantity: 100, balance: 100, ref_no: 'GR-1', created_at: '2026-01-01T00:00:00Z' },
+  ], [{ product_id: 'P1', warehouse_id: 'WH01', quantity: 88, frozen_quantity: 0, in_transit: 0 }]);
+  assert('台账守恒-链末与库存不符 fail', ledgerTail.result === 'fail');
+
+  // 单号唯一
+  const docPass = evalDocNoUnique([
+    { table: 'po_purchase_orders', doc_no: 'PO-1' },
+    { table: 'so_sales_orders', doc_no: 'SO-1' },
+  ]);
+  assert('单号唯一-无重复 pass', docPass.result === 'pass');
+  const docDup = evalDocNoUnique([
+    { table: 'po_purchase_orders', doc_no: 'X-1' },
+    { table: 'fin_vouchers', doc_no: 'X-1' },
+  ]);
+  assert('单号唯一-跨表重复 fail', docDup.result === 'fail' && docDup.failureType === 'DOC_NO_DUPLICATED');
+
+  // 货值勾稽
+  const valueRows = [
+    { product_id: 'P1', warehouse_id: 'WH01', quantity: 10, frozen_quantity: 0, in_transit: 0, avg_cost: 5, total_cost: 50 },
+    { product_id: 'P2', warehouse_id: 'WH01', quantity: 4, frozen_quantity: 0, in_transit: 0, avg_cost: 25, total_cost: 100 },
+  ];
+  const valuePass = evalValueRecon(valueRows, 150, 'warn');
+  assert('货值勾稽-与1405一致 pass', valuePass.result === 'pass');
+  const valueWarn = evalValueRecon(valueRows, 120, 'warn');
+  assert('货值勾稽-偏差按 warn 级别告警', valueWarn.result === 'warn' && valueWarn.failureType === 'VALUE_GL_MISMATCH');
+  const valueFail = evalValueRecon(valueRows, 120, 'fail');
+  assert('货值勾稽-偏差按 fail 级别失败', valueFail.result === 'fail');
+  const valueRowBad = evalValueRecon([
+    { product_id: 'P1', warehouse_id: 'WH01', quantity: 10, frozen_quantity: 0, in_transit: 0, avg_cost: 5, total_cost: 99 },
+  ], null, 'fail');
+  assert('货值勾稽-行级 qty×avg≠total fail', valueRowBad.result === 'fail' && valueRowBad.failureType === 'VALUE_ROW_MISMATCH');
+
+  // 凭证平衡
+  const voucherPass = evalVoucherBalance(
+    [{ id: 'v1', voucher_no: 'JZ-1', status: 'posted' }],
+    [
+      { voucher_id: 'v1', direction: 'debit', amount: 100 },
+      { voucher_id: 'v1', direction: 'credit', amount: 100 },
+    ],
+  );
+  assert('凭证平衡-借贷相等 pass', voucherPass.result === 'pass');
+  const voucherFail = evalVoucherBalance(
+    [{ id: 'v1', voucher_no: 'JZ-1', status: 'posted' }],
+    [
+      { voucher_id: 'v1', direction: 'debit', amount: 100 },
+      { voucher_id: 'v1', direction: 'credit', amount: 90 },
+    ],
+  );
+  assert('凭证平衡-借贷不等 fail', voucherFail.result === 'fail' && voucherFail.failureType === 'VOUCHER_UNBALANCED');
+
+  // 应收应付
+  const arapPass = evalArApRecon({
+    so_billed: 1000, so_returned: 100, received: 500,
+    po_billed: 800, po_returned: 50, po_reversal_net: 20, paid: 300,
+  });
+  assert('应收应付-正常 pass 且余额正确', arapPass.result === 'pass'
+    && (arapPass.detail.receivable as number) === 400
+    && (arapPass.detail.payable as number) === 470);
+  const arapNeg = evalArApRecon({
+    so_billed: 1000, so_returned: 0, received: 1200,
+    po_billed: 800, po_returned: 0, po_reversal_net: 0, paid: 300,
+  });
+  assert('应收应付-超额核销 fail', arapNeg.result === 'fail' && arapNeg.failureType === 'ARAP_NEGATIVE');
+
+  // 跑批汇总：fail 级且 severity=fail 才阻断
+  const summary = summarizeRun([
+    { key: 'a', name: 'A', severity: 'fail', result: 'pass', detail: {} },
+    { key: 'b', name: 'B', severity: 'warn', result: 'warn', detail: {} },
+    { key: 'c', name: 'C', severity: 'warn', result: 'fail', detail: {} },
+  ]);
+  assert('汇总-warn级fail不阻断', summary.blocking === false && summary.failed === 1 && summary.warned === 1);
+  const summaryBlock = summarizeRun([
+    { key: 'a', name: 'A', severity: 'fail', result: 'fail', detail: {} },
+  ]);
+  assert('汇总-fail级fail阻断', summaryBlock.blocking === true);
+
+  // 备份：sha256 稳定性 / stats / 范围解析
+  const rows = [{ a: 1, b: 'x' }, { a: 2, b: 'y' }];
+  const h1 = tableSha256(rows);
+  const h2 = tableSha256([...rows].reverse());
+  assert('备份-sha256 与行顺序无关', h1 === h2);
+  assert('备份-sha256 64位hex', /^[0-9a-f]{64}$/.test(h1));
+  const stats = buildTableStats({ t1: rows, t2: [{ c: 1 }] });
+  assert('备份-stats 行数正确', stats.t1.rows === 2 && stats.t2.rows === 1);
+  assert('备份-总行数', totalRowsOf(stats) === 3);
+  const scope = resolveScopeTables(['md', 'fin']);
+  assert('备份-范围解析含 md/fin 表', scope.invalid.length === 0 && scope.tables.includes('md_products') && scope.tables.includes('fin_vouchers'));
+  const scopeBad = resolveScopeTables(['nope']);
+  assert('备份-未知分组识别', scopeBad.invalid.length === 1);
 }
 
 console.log(`\n${passed} passed, ${failures} failed`);
