@@ -22,6 +22,10 @@ export interface StockRow {
   sku_code: string | null;
   spec: string | null;
   unit: string | null;
+  /** 色号编码（'' = 默认色/未分色） */
+  color_code: string;
+  /** 色号名称快照（档案 LEFT JOIN 于内存补全） */
+  color_name: string | null;
   /** 安全库存阈值（商品主数据；跨仓合计口径预警用） */
   safety_stock: string;
   /** 现有量（实物在库） */
@@ -41,6 +45,8 @@ export interface StockRow {
 
 export interface StockListQuery extends ListQuery {
   warehouse_id?: string;
+  /** 按色号编码过滤（'' 或 undefined 不过滤） */
+  color_code?: string;
 }
 
 /** 按名称/编码模糊查匹配商品 ID（无关键字时返回 null 表示不过滤） */
@@ -72,6 +78,7 @@ export async function listStock(query: StockListQuery): Promise<PagedResult<Stoc
       `
       warehouse_id,
       product_id,
+      color_code,
       quantity,
       in_transit,
       frozen_quantity,
@@ -88,9 +95,23 @@ export async function listStock(query: StockListQuery): Promise<PagedResult<Stoc
 
   if (productIds) req = req.in('product_id', productIds);
   if (query.warehouse_id) req = req.eq('warehouse_id', query.warehouse_id);
+  if (query.color_code !== undefined) req = req.eq('color_code', query.color_code);
 
   const { data, error, count } = await req;
   if (error) throwDbError(error, '查询库存余额');
+
+  // 色号名称补全：批量查本页涉及的 商品+色号 档案
+  const colorPairs = new Map<string, string>();
+  const pidSet = [...new Set((data ?? []).map((r) => r.product_id as string))];
+  if (pidSet.length > 0) {
+    const { data: colorRows } = await getSupabaseClient()
+      .from('md_product_colors')
+      .select('product_id, color_code, color_name')
+      .in('product_id', pidSet);
+    for (const c of colorRows ?? []) {
+      colorPairs.set(`${c.product_id as string}|${c.color_code as string}`, c.color_name as string);
+    }
+  }
 
   const items: StockRow[] = (data ?? []).map((row) => {
     const product = (row.product ?? {}) as {
@@ -103,6 +124,7 @@ export async function listStock(query: StockListQuery): Promise<PagedResult<Stoc
     const warehouse = (row.warehouse ?? {}) as { code?: string; name?: string };
     const quantity = Number(row.quantity ?? 0);
     const frozen = Number(row.frozen_quantity ?? 0);
+    const colorCode = (row.color_code as string) ?? '';
     return {
       warehouse_id: row.warehouse_id as string,
       warehouse_name: warehouse.name ?? '—',
@@ -112,6 +134,8 @@ export async function listStock(query: StockListQuery): Promise<PagedResult<Stoc
       sku_code: product.sku_code ?? null,
       spec: product.spec ?? null,
       unit: product.unit ?? null,
+      color_code: colorCode,
+      color_name: colorCode ? (colorPairs.get(`${row.product_id as string}|${colorCode}`) ?? null) : null,
       safety_stock: String(product.safety_stock ?? 0),
       quantity: String(row.quantity),
       frozen_quantity: String(row.frozen_quantity ?? 0),
@@ -126,17 +150,19 @@ export async function listStock(query: StockListQuery): Promise<PagedResult<Stoc
   return { items, total: count ?? 0, page: query.page, page_size: query.pageSize };
 }
 
-/** 冻结量调整（正=冻结，负=解冻）；走数据库函数行锁校验 */
+/** 冻结量调整（正=冻结，负=解冻）；走数据库函数行锁校验；按色号维度调整 */
 export async function adjustFrozen(input: {
   product_id: string;
   warehouse_id: string;
   delta: number;
+  color_code?: string;
 }, userId: string): Promise<{ frozen_quantity: number }> {
   const { data, error } = await getSupabaseClient().rpc('inv_adjust_frozen', {
     p_product_id: input.product_id,
     p_warehouse_id: input.warehouse_id,
     p_delta: input.delta,
     p_user_id: userId,
+    p_color_code: (input.color_code ?? '').trim(),
   });
   if (error) throwInventoryRpcError(error, '调整冻结量');
   return { frozen_quantity: Number(data) };
@@ -158,6 +184,8 @@ export interface MovementRow {
   remark: string | null;
   /** 本次出入库的单价/成本快照（入库=实际单价，出库=加权均价） */
   unit_cost: string | null;
+  /** 色号编码（'' = 默认色） */
+  color_code: string;
   created_by_name: string | null;
   created_at: string;
 }
@@ -165,6 +193,8 @@ export interface MovementRow {
 interface MovementListQuery extends ListQuery {
   type?: string;
   warehouse_id?: string;
+  /** 按色号编码过滤 */
+  color_code?: string;
 }
 
 /** 批量补全操作人姓名（created_by 无 FK，不能用嵌入） */
@@ -203,6 +233,7 @@ export async function listMovements(query: MovementListQuery): Promise<PagedResu
       id,
       warehouse_id,
       product_id,
+      color_code,
       type,
       quantity,
       balance,
@@ -223,6 +254,7 @@ export async function listMovements(query: MovementListQuery): Promise<PagedResu
 
   if (query.type) req = req.eq('type', query.type);
   if (query.warehouse_id) req = req.eq('warehouse_id', query.warehouse_id);
+  if (query.color_code !== undefined) req = req.eq('color_code', query.color_code);
   if (kw) {
     if (productIds && productIds.length > 0) {
       req = req.or(`product_id.in.(${productIds.join(',')}),ref_no.ilike.%${kw}%`);
@@ -259,6 +291,7 @@ export async function listMovements(query: MovementListQuery): Promise<PagedResu
       ref_no: (row.ref_no as string | null) ?? null,
       remark: (row.remark as string | null) ?? null,
       unit_cost: row.unit_cost === null || row.unit_cost === undefined ? null : String(row.unit_cost),
+      color_code: (row.color_code as string) ?? '',
       created_by_name: createdBy ? (creatorMap.get(createdBy) ?? null) : null,
       created_at: row.created_at as string,
     };

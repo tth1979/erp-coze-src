@@ -197,6 +197,30 @@ export const mdProducts = pgTable(
   ],
 );
 
+/** 商品色号档案（0022）：同一 SKU 型号下多个花色；色号编码在商品内唯一 */
+export const mdProductColors = pgTable(
+  "md_product_colors",
+  {
+    id: varchar("id", { length: 36 }).primaryKey().default(sql`gen_random_uuid()`),
+    product_id: varchar("product_id", { length: 36 })
+      .notNull()
+      .references(() => mdProducts.id, { onDelete: "cascade" }),
+    /** 色号编码（同一商品内唯一） */
+    color_code: varchar("color_code", { length: 32 }).notNull(),
+    /** 色号名称（如 米白/浅灰/深灰） */
+    color_name: varchar("color_name", { length: 64 }).notNull(),
+    /** active=可选 / disabled=停用（停用不影响历史单据） */
+    status: varchar("status", { length: 20 }).notNull().default("active"),
+    remark: text("remark"),
+    created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updated_at: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    unique("md_product_colors_unique").on(table.product_id, table.color_code),
+    index("md_product_colors_product_idx").on(table.product_id),
+  ],
+);
+
 // ============================================================
 // po_ 采购模块：采购订单（单据头 + 明细行）
 // 库存联动（到货入库）留待 inv_ 库存里程碑，状态机已预留 completed
@@ -270,6 +294,10 @@ export const poPurchaseOrderItems = pgTable(
     amount: numeric("amount", { precision: 14, scale: 2 }).notNull(),
     /** 单位快照（商品单位后续变更不影响历史单据） */
     unit: varchar("unit", { length: 16 }),
+    /** 色号编码（0022；''=默认色/未分色，库存最小单元含此维度） */
+    color_code: varchar("color_code", { length: 32 }).notNull().default(""),
+    /** 色号名称快照（单据冗余，色号档案后续改名不影响历史单据） */
+    color_name: varchar("color_name", { length: 64 }),
     created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [
@@ -343,6 +371,10 @@ export const soSalesOrderItems = pgTable(
     amount: numeric("amount", { precision: 14, scale: 2 }).notNull(),
     /** 单位快照（商品单位后续变更不影响历史单据） */
     unit: varchar("unit", { length: 16 }),
+    /** 色号编码（0022；''=默认色/未分色，库存最小单元含此维度） */
+    color_code: varchar("color_code", { length: 32 }).notNull().default(""),
+    /** 色号名称快照（单据冗余，色号档案后续改名不影响历史单据） */
+    color_name: varchar("color_name", { length: 64 }),
     created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [
@@ -411,6 +443,10 @@ export const soShipmentItems = pgTable(
     /** 结转成本（= 出库时点移动加权均价 × 数量，审批通过时写入） */
     cost: numeric("cost", { precision: 14, scale: 2 }),
     unit: varchar("unit", { length: 16 }),
+    /** 色号编码（0022；''=默认色/未分色，库存最小单元含此维度） */
+    color_code: varchar("color_code", { length: 32 }).notNull().default(""),
+    /** 色号名称快照（单据冗余，色号档案后续改名不影响历史单据） */
+    color_name: varchar("color_name", { length: 64 }),
     created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [
@@ -479,6 +515,10 @@ export const soReturnItems = pgTable(
     /** 回补成本单价（创建时快照当前移动加权均价，红字冲销口径） */
     unit_cost: numeric("unit_cost", { precision: 14, scale: 4 }),
     unit: varchar("unit", { length: 16 }),
+    /** 色号编码（0022；''=默认色/未分色，库存最小单元含此维度） */
+    color_code: varchar("color_code", { length: 32 }).notNull().default(""),
+    /** 色号名称快照（单据冗余，色号档案后续改名不影响历史单据） */
+    color_name: varchar("color_name", { length: 64 }),
     created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [
@@ -518,6 +558,8 @@ export const invStock = pgTable(
     product_id: varchar("product_id", { length: 36 })
       .notNull()
       .references(() => mdProducts.id),
+    /** 色号编码（0022：库存最小单元 = 仓库 × 商品 × 色号；''=默认色） */
+    color_code: varchar("color_code", { length: 32 }).notNull().default(""),
     /** 现有量（实物在库数量） */
     quantity: numeric("quantity", { precision: 14, scale: 3 }).notNull().default("0"),
     /** 在途量（调拨已审未收货，计入本仓） */
@@ -532,9 +574,10 @@ export const invStock = pgTable(
     updated_at: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [
-    unique("inv_stock_warehouse_product_unique").on(table.warehouse_id, table.product_id),
+    unique("inv_stock_wh_product_color_unique").on(table.warehouse_id, table.product_id, table.color_code),
     index("inv_stock_quantity_idx").on(table.quantity),
     index("inv_stock_product_idx").on(table.product_id),
+    index("inv_stock_color_idx").on(table.product_id, table.color_code),
   ],
 );
 
@@ -551,6 +594,8 @@ export const invBatches = pgTable(
     warehouse_id: varchar("warehouse_id", { length: 36 })
       .notNull()
       .references(() => invWarehouses.id),
+    /** 色号编码（0022：批次最小单元含色号，FIFO 不串色） */
+    color_code: varchar("color_code", { length: 32 }).notNull().default(""),
     /** 批次入库单位成本快照（用于 FIFO 对账） */
     unit_cost: numeric("unit_cost", { precision: 14, scale: 4 }).notNull().default("0"),
     initial_quantity: numeric("initial_quantity", { precision: 14, scale: 3 }).notNull(),
@@ -563,10 +608,11 @@ export const invBatches = pgTable(
     created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [
-    unique("inv_batches_unique").on(table.product_id, table.warehouse_id, table.batch_no),
+    unique("inv_batches_unique").on(table.product_id, table.warehouse_id, table.batch_no, table.color_code),
     index("inv_batches_product_idx").on(table.product_id),
     index("inv_batches_warehouse_idx").on(table.warehouse_id),
     index("inv_batches_expiry_idx").on(table.expiry_date),
+    index("inv_batches_color_idx").on(table.product_id, table.color_code),
   ],
 );
 
@@ -583,6 +629,8 @@ export const invStockLedger = pgTable(
       .references(() => mdProducts.id),
     /** 批次（出库为 FIFO 扣减的首个批次；可空） */
     batch_id: varchar("batch_id", { length: 36 }),
+    /** 色号编码（0022：台账最小单元含色号） */
+    color_code: varchar("color_code", { length: 32 }).notNull().default(""),
     /** 类型：in(入库) | out(出库) | adjust(盘盈/盘亏) */
     type: varchar("type", { length: 16 }).notNull(),
     /** 本次变动数量（in/adjust盘盈为正，out/adjust盘亏为负） */
@@ -662,6 +710,10 @@ export const invTransferItems = pgTable(
     /** 调出时移动加权成本快照（调入仓按此成本入账） */
     unit_cost: numeric("unit_cost", { precision: 14, scale: 4 }),
     unit: varchar("unit", { length: 16 }),
+    /** 色号编码（0022；''=默认色/未分色，库存最小单元含此维度） */
+    color_code: varchar("color_code", { length: 32 }).notNull().default(""),
+    /** 色号名称快照（单据冗余，色号档案后续改名不影响历史单据） */
+    color_name: varchar("color_name", { length: 64 }),
     created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [
@@ -721,6 +773,10 @@ export const invCheckItems = pgTable(
     /** 过账成本快照（盘亏=当时加权均价；盘盈=当时加权均价） */
     unit_cost: numeric("unit_cost", { precision: 14, scale: 4 }),
     unit: varchar("unit", { length: 16 }),
+    /** 色号编码（0022；''=默认色/未分色，库存最小单元含此维度） */
+    color_code: varchar("color_code", { length: 32 }).notNull().default(""),
+    /** 色号名称快照（单据冗余，色号档案后续改名不影响历史单据） */
+    color_name: varchar("color_name", { length: 64 }),
     created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [
@@ -894,6 +950,10 @@ export const poRequisitionItems = pgTable(
     suggest_price: numeric("suggest_price", { precision: 12, scale: 2 }).notNull().default("0"),
     amount: numeric("amount", { precision: 14, scale: 2 }).notNull().default("0"),
     unit: varchar("unit", { length: 16 }),
+    /** 色号编码（0022；''=默认色/未分色，库存最小单元含此维度） */
+    color_code: varchar("color_code", { length: 32 }).notNull().default(""),
+    /** 色号名称快照（单据冗余，色号档案后续改名不影响历史单据） */
+    color_name: varchar("color_name", { length: 64 }),
     remark: varchar("remark", { length: 200 }),
     created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
@@ -970,6 +1030,10 @@ export const poReceiptItems = pgTable(
     unit_price: numeric("unit_price", { precision: 12, scale: 2 }).notNull(),
     amount: numeric("amount", { precision: 14, scale: 2 }).notNull(),
     unit: varchar("unit", { length: 16 }),
+    /** 色号编码（0022；''=默认色/未分色，库存最小单元含此维度） */
+    color_code: varchar("color_code", { length: 32 }).notNull().default(""),
+    /** 色号名称快照（单据冗余，色号档案后续改名不影响历史单据） */
+    color_name: varchar("color_name", { length: 64 }),
     created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [
@@ -1033,6 +1097,10 @@ export const poReturnItems = pgTable(
     unit_price: numeric("unit_price", { precision: 12, scale: 2 }).notNull(),
     amount: numeric("amount", { precision: 14, scale: 2 }).notNull(),
     unit: varchar("unit", { length: 16 }),
+    /** 色号编码（0022；''=默认色/未分色，库存最小单元含此维度） */
+    color_code: varchar("color_code", { length: 32 }).notNull().default(""),
+    /** 色号名称快照（单据冗余，色号档案后续改名不影响历史单据） */
+    color_name: varchar("color_name", { length: 64 }),
     created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [

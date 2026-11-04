@@ -65,6 +65,7 @@ function FreezeDialog({
         body: JSON.stringify({
           warehouse_id: row.warehouse_id,
           product_id: row.product_id,
+          color_code: row.color_code || '',
           delta: value,
           remark: remark.trim() || undefined,
         }),
@@ -87,7 +88,9 @@ function FreezeDialog({
         <DialogHeader>
           <DialogTitle>冻结 / 解冻库存</DialogTitle>
           <DialogDescription>
-            {row ? `${row.product_name} @ ${row.warehouse_name ?? '默认仓'}` : ''}
+            {row
+              ? `${row.product_name}${row.color_name ? ` · ${row.color_name}` : ''} @ ${row.warehouse_name ?? '默认仓'}`
+              : ''}
             ，当前可用 {row ? formatQty(Number(row.available)) : '—'}
             {row?.unit ?? ''}，已冻结 {row ? formatQty(Number(row.frozen_quantity)) : '—'}
             {row?.unit ?? ''}
@@ -133,8 +136,13 @@ export default function StockPage() {
   const canWrite = can('inv.write');
   const [searchInput, setSearchInput] = useState('');
   const [warehouseId, setWarehouseId] = useState('');
+  const [colorCode, setColorCode] = useState('');
+  const [colorInput, setColorInput] = useState('');
   const [freezeTarget, setFreezeTarget] = useState<StockItem | null>(null);
-  const list = usePagedList<StockItem>('/api/inv/stock', 10, { warehouse_id: warehouseId });
+  const list = usePagedList<StockItem>('/api/inv/stock', 10, {
+    warehouse_id: warehouseId,
+    color_code: colorCode,
+  });
 
   return (
     <div className="space-y-4">
@@ -173,7 +181,28 @@ export default function StockPage() {
             setWarehouseId(v);
           }}
         />
-        <Button variant="outline" size="sm" onClick={() => list.setKeyword(searchInput)} aria-label="搜索">
+        <Input
+          value={colorInput}
+          onChange={(e) => setColorInput(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              list.setPage(1);
+              setColorCode(colorInput.trim());
+            }
+          }}
+          placeholder="色号编码过滤，回车确认"
+          className="h-9 w-full sm:w-40"
+        />
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => {
+            list.setKeyword(searchInput);
+            list.setPage(1);
+            setColorCode(colorInput.trim());
+          }}
+          aria-label="搜索"
+        >
           <Search className="h-4 w-4 sm:mr-1" />
           <span className="hidden sm:inline">搜索</span>
         </Button>
@@ -201,14 +230,16 @@ export default function StockPage() {
               const out = available <= 0;
               return (
                 <div
-                  key={`${row.warehouse_id}-${row.product_id}`}
+                  key={`${row.warehouse_id}-${row.product_id}-${row.color_code ?? ''}`}
                   className="rounded-lg border border-stone-200 bg-white p-3.5 shadow-sm"
                 >
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
                       <div className="truncate text-sm font-medium text-stone-900">{row.product_name}</div>
                       <div className="mt-0.5 font-mono text-xs text-stone-500">
-                        {row.sku_code ?? '—'} · {row.warehouse_name ?? '默认仓'}
+                        {row.sku_code ?? '—'}
+                        {row.color_name ? ` · ${row.color_name}(${row.color_code})` : ' · 默认色'} ·{' '}
+                        {row.warehouse_name ?? '默认仓'}
                       </div>
                     </div>
                     <span
@@ -254,6 +285,7 @@ export default function StockPage() {
                 <TableRow>
                   <TableHead>商品编码</TableHead>
                   <TableHead>商品名称</TableHead>
+                  <TableHead>色号</TableHead>
                   <TableHead>仓库</TableHead>
                   <TableHead className="text-right">现有量</TableHead>
                   <TableHead className="text-right">冻结量</TableHead>
@@ -270,9 +302,19 @@ export default function StockPage() {
                   const available = Number(row.available);
                   const out = available <= 0;
                   return (
-                    <TableRow key={`${row.warehouse_id}-${row.product_id}`}>
+                    <TableRow key={`${row.warehouse_id}-${row.product_id}-${row.color_code ?? ''}`}>
                       <TableCell className="font-mono text-xs text-stone-500">{row.sku_code ?? '—'}</TableCell>
                       <TableCell className="font-medium text-stone-800">{row.product_name}</TableCell>
+                      <TableCell className="text-xs text-stone-600">
+                        {row.color_name ? (
+                          <span>
+                            {row.color_name}
+                            <span className="ml-1 font-mono text-stone-400">{row.color_code}</span>
+                          </span>
+                        ) : (
+                          <span className="text-stone-400">默认色</span>
+                        )}
+                      </TableCell>
                       <TableCell className="text-stone-600">{row.warehouse_name ?? '默认仓'}</TableCell>
                       <TableCell className="text-right font-medium tabular-nums text-stone-900">
                         {formatQty(Number(row.quantity))}

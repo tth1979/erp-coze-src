@@ -14,6 +14,7 @@ import { ApiError } from '@/server/http';
 import { throwInventoryRpcError } from '@/server/inventory/shared';
 import { emptyToNull, escapeOrKeyword, throwDbError, type ListQuery, type PagedResult } from '@/server/master-data/helpers';
 import { approveCurrentStep, listSteps, rejectCurrentStep, submitDocument, type ApprovalStepView } from '@/server/approval/engine';
+import { colorNameOf, normalizeColorCode, resolveItemColors } from '@/server/master-data/colors';
 import { onPurchaseReceipt, onReceiptReverse, fetchSupplierName } from '@/server/ledger/events';
 import { getSupabaseClient } from '@/storage/database/supabase-client';
 import type { PoPurchaseOrderItem, PoReceipt, PoReceiptItem, SysUser } from '@/storage/database/shared/schema';
@@ -31,6 +32,9 @@ export interface ReceiptItemView {
   unit_price: number;
   amount: number;
   unit: string | null;
+  /** 色号（0022；''=默认色） */
+  color_code: string;
+  color_name: string | null;
 }
 
 export interface ReceiptView {
@@ -70,6 +74,8 @@ const itemSchema = z.object({
   product_id: uuid,
   quantity: z.number().positive('数量必须大于 0').max(9_999_999, '数量超出范围'),
   unit_price: z.number().min(0, '单价不能为负').max(99_999_999, '单价超出范围'),
+  /** 色号编码（可空，空=默认色；须与订单行色号一致） */
+  color_code: z.string().max(32, '色号编码不能超过 32 字').optional(),
 });
 
 export const receiptCreateSchema = z.object({
@@ -256,6 +262,8 @@ export async function getReceipt(id: string): Promise<ReceiptView> {
     unit_price: toNumber(item.unit_price),
     amount: toNumber(item.amount),
     unit: item.unit,
+    color_code: item.color_code ?? '',
+    color_name: item.color_name ?? null,
   }));
 
   return serialize(row, {
@@ -290,22 +298,26 @@ export async function createReceipt(input: ReceiptCreateInput, operatorId: strin
     throw new ApiError(400, 'PO.ORDER_NOT_APPROVED', '仅已审批的采购订单可生成入库单');
   }
 
-  // 明细商品须属于订单明细（防止录入无关商品）
+  // 明细商品须属于订单明细（防止录入无关商品）；色号维度同样须与订单行一致
   const { data: orderItems, error: oiErr } = await supabase
     .from('po_purchase_order_items')
     .select('*')
     .eq('order_id', input.order_id);
   if (oiErr) throwDbError(oiErr, '校验订单明细');
-  const orderProductIds = new Set(((orderItems ?? []) as PoPurchaseOrderItem[]).map((i) => i.product_id));
+  const orderProductColorKeys = new Set(
+    ((orderItems ?? []) as PoPurchaseOrderItem[]).map((i) => `${i.product_id}|${i.color_code ?? ''}`),
+  );
 
+  const colorMap = await resolveItemColors(input.items);
   let total = 0;
   const items = input.items.map((item) => {
-    if (!orderProductIds.has(item.product_id)) {
-      throw new ApiError(400, 'PO.PRODUCT_MISMATCH', '入库明细中存在订单之外的商品');
+    const colorCode = normalizeColorCode(item.color_code);
+    if (!orderProductColorKeys.has(`${item.product_id}|${colorCode}`)) {
+      throw new ApiError(400, 'PO.PRODUCT_MISMATCH', '入库明细中存在订单之外的商品或色号');
     }
     const amount = round2(item.quantity * item.unit_price);
     total = round2(total + amount);
-    return { ...item, amount };
+    return { ...item, color_code: colorCode, color_name: colorNameOf(colorMap, item.product_id, colorCode), amount };
   });
 
   // 单位快照
@@ -348,6 +360,8 @@ export async function createReceipt(input: ReceiptCreateInput, operatorId: strin
       unit_price: item.unit_price,
       amount: item.amount,
       unit: unitMap.get(item.product_id) ?? null,
+      color_code: item.color_code,
+      color_name: item.color_name,
     })),
   );
   if (itemErr) {
@@ -423,18 +437,18 @@ export async function reverseReceipt(id: string, input: ReceiptReverseInput, use
     throw new ApiError(400, 'PO.BAD_TRANSITION', '仅已入库的暂估单可执行冲回');
   }
 
-  // 蓝字明细校验：商品集合与原单一致
-  const originalIds = new Set((existing.items ?? []).map((i) => i.product_id));
-  const inputIds = new Set(input.items.map((i) => i.product_id));
-  if (originalIds.size !== inputIds.size || [...originalIds].some((pid) => !inputIds.has(pid))) {
-    throw new ApiError(400, 'PO.ITEMS_MISMATCH', '蓝字明细商品须与原暂估单一致');
+  // 蓝字明细校验：商品+色号集合与原单一致
+  const originalKeys = new Set((existing.items ?? []).map((i) => `${i.product_id}|${i.color_code}`));
+  const inputKeys = new Set(input.items.map((i) => `${i.product_id}|${normalizeColorCode(i.color_code)}`));
+  if (originalKeys.size !== inputKeys.size || [...originalKeys].some((k) => !inputKeys.has(k))) {
+    throw new ApiError(400, 'PO.ITEMS_MISMATCH', '蓝字明细商品+色号须与原暂估单一致');
   }
 
   const supabase = getSupabaseClient();
   const { error } = await supabase.rpc('po_reverse_receipt', {
     p_receipt_id: id,
     p_invoice_no: input.invoice_no,
-    p_items: input.items,
+    p_items: input.items.map((it) => ({ ...it, color_code: normalizeColorCode(it.color_code) })),
     p_user_id: user.id,
   });
   if (error) throwInventoryRpcError(error, '暂估冲回');

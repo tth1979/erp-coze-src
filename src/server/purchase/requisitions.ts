@@ -10,6 +10,7 @@ import { z } from 'zod';
 import { nextDocNo } from '@/server/doc-no';
 import { ApiError } from '@/server/http';
 import { emptyToNull, escapeOrKeyword, throwDbError, type ListQuery, type PagedResult } from '@/server/master-data/helpers';
+import { colorNameOf, normalizeColorCode, resolveItemColors } from '@/server/master-data/colors';
 import { approveCurrentStep, listSteps, rejectCurrentStep, submitDocument, type ApprovalStepView } from '@/server/approval/engine';
 import { getSupabaseClient } from '@/storage/database/supabase-client';
 import type { PoRequisition, PoRequisitionItem, SysUser } from '@/storage/database/shared/schema';
@@ -30,6 +31,8 @@ export interface RequisitionItemView {
   amount: number;
   unit: string | null;
   remark: string | null;
+  color_code: string | null;
+  color_name: string | null;
 }
 
 export interface RequisitionView {
@@ -65,6 +68,8 @@ const itemSchema = z.object({
   quantity: z.number().positive('数量必须大于 0').max(9_999_999, '数量超出范围'),
   suggest_price: z.number().min(0, '建议价不能为负').max(99_999_999, '建议价超出范围').default(0),
   remark: z.string().max(200, '行备注过长').optional(),
+  /** 色号编码（库存最小管理单元维度）；''/省略=默认色 */
+  color_code: z.string().max(32, '色号编码不能超过 32 字').optional(),
 });
 
 export const requisitionUpsertSchema = z.object({
@@ -149,6 +154,8 @@ interface PreparedItem {
   amount: number;
   unit: string | null;
   remark: string | null;
+  color_code: string;
+  color_name: string | null;
 }
 
 /** 校验商品存在性，服务端计算行金额与估算总额 */
@@ -161,8 +168,10 @@ async function prepareItems(input: RequisitionUpsertInput): Promise<{ items: Pre
   for (const pid of productIds) {
     if (!productMap.has(pid)) throw new ApiError(400, 'PO.PRODUCT_NOT_FOUND', '存在无效商品，请刷新后重试');
   }
+  const colorMap = await resolveItemColors(input.items);
   let total = 0;
   const items: PreparedItem[] = input.items.map((item) => {
+    const colorCode = normalizeColorCode(item.color_code);
     const amount = Math.round(item.quantity * item.suggest_price * 100) / 100;
     total = Math.round((total + amount) * 100) / 100;
     return {
@@ -172,6 +181,8 @@ async function prepareItems(input: RequisitionUpsertInput): Promise<{ items: Pre
       amount,
       unit: (productMap.get(item.product_id)?.unit as string | null) ?? null,
       remark: emptyToNull(item.remark),
+      color_code: colorCode,
+      color_name: colorNameOf(colorMap, item.product_id, colorCode),
     };
   });
   return { items, total };
@@ -273,6 +284,8 @@ export async function getRequisition(id: string): Promise<RequisitionView> {
     amount: toNumber(item.amount),
     unit: item.unit,
     remark: item.remark,
+    color_code: item.color_code ?? null,
+    color_name: item.color_name ?? null,
   }));
 
   return serialize(row, {
@@ -387,7 +400,7 @@ export async function rejectRequisition(id: string, user: SysUser, reason: strin
  */
 export async function convertRequisition(
   id: string,
-  input: { supplier_id: string; items?: Array<{ product_id: string; quantity: number; unit_price: number }> },
+  input: { supplier_id: string; items?: Array<{ product_id: string; quantity: number; unit_price: number; color_code?: string }> },
   operatorId: string,
 ): Promise<PurchaseOrderView> {
   const supabase = getSupabaseClient();
@@ -402,7 +415,12 @@ export async function convertRequisition(
   const sourceItems = existing.items ?? [];
   const orderItems = (input.items ?? []).length > 0
     ? input.items!
-    : sourceItems.map((i) => ({ product_id: i.product_id, quantity: i.quantity, unit_price: i.suggest_price }));
+    : sourceItems.map((i) => ({
+        product_id: i.product_id,
+        quantity: i.quantity,
+        unit_price: i.suggest_price,
+        color_code: i.color_code ?? undefined,
+      }));
 
   const order = await createOrder(
     { supplier_id: input.supplier_id, requisition_id: id, items: orderItems },

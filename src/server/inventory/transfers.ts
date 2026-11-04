@@ -13,6 +13,7 @@ import { nextDocNo } from '@/server/doc-no';
 import { ApiError } from '@/server/http';
 import { throwInventoryRpcError } from '@/server/inventory/shared';
 import { escapeOrKeyword, throwDbError, type ListQuery, type PagedResult } from '@/server/master-data/helpers';
+import { colorNameOf, normalizeColorCode, resolveItemColors } from '@/server/master-data/colors';
 import { approveCurrentStep, listSteps, rejectCurrentStep, submitDocument, type ApprovalStepView } from '@/server/approval/engine';
 import { getSupabaseClient } from '@/storage/database/supabase-client';
 import type { InvTransfer, InvTransferItem, SysUser } from '@/storage/database/shared/schema';
@@ -30,6 +31,8 @@ export interface TransferItemView {
   quantity: number;
   /** 调出均价快照（终审时写入；审核前为 null） */
   unit_cost: number | null;
+  color_code: string | null;
+  color_name: string | null;
 }
 
 export interface TransferView {
@@ -63,6 +66,8 @@ const uuid = z.string().regex(/^[0-9a-fA-F-]{36}$/, 'ID 格式不正确');
 const itemSchema = z.object({
   product_id: uuid,
   quantity: z.number().positive('数量必须大于 0').max(9_999_999, '数量超出范围'),
+  /** 色号编码（库存最小管理单元维度）；''/省略=默认色 */
+  color_code: z.string().max(32, '色号编码不能超过 32 字').optional(),
 });
 
 export const transferCreateSchema = z
@@ -259,6 +264,8 @@ export async function getTransfer(id: string): Promise<TransferView> {
       unit: it.unit ?? skuUnitMap.get(it.product_id)?.unit ?? null,
       quantity: toNumber(it.quantity),
       unit_cost: it.unit_cost === null ? null : toNumber(it.unit_cost),
+      color_code: it.color_code ?? null,
+      color_name: it.color_name ?? null,
     })),
     steps,
   });
@@ -290,6 +297,8 @@ export async function createTransfer(input: unknown, user: SysUser): Promise<Tra
 
   // 单位快照（明细 unit 列）
   const skuUnitMap = await fetchProductSkuUnitMap(parsed.data.items.map((it) => it.product_id));
+  // 色号校验（非空色号须在商品色号档案内且 active）
+  const colorMap = await resolveItemColors(parsed.data.items);
 
   const supabase = getSupabaseClient();
   const transferNo = await nextDocNo('IT', 'inv_transfers', 'transfer_no');
@@ -309,12 +318,17 @@ export async function createTransfer(input: unknown, user: SysUser): Promise<Tra
   const row = data as InvTransfer;
 
   const { error: iErr } = await supabase.from('inv_transfer_items').insert(
-    parsed.data.items.map((it) => ({
-      transfer_id: row.id,
-      product_id: it.product_id,
-      quantity: it.quantity,
-      unit: skuUnitMap.get(it.product_id)?.unit ?? null,
-    })),
+    parsed.data.items.map((it) => {
+      const colorCode = normalizeColorCode(it.color_code);
+      return {
+        transfer_id: row.id,
+        product_id: it.product_id,
+        quantity: it.quantity,
+        unit: skuUnitMap.get(it.product_id)?.unit ?? null,
+        color_code: colorCode,
+        color_name: colorNameOf(colorMap, it.product_id, colorCode),
+      };
+    }),
   );
   if (iErr) throwDbError(iErr, '写入调拨明细');
   return getTransfer(row.id);
@@ -332,6 +346,7 @@ export async function updateTransfer(id: string, input: unknown, _user: SysUser)
   }
   await assertWarehousesActive([parsed.data.from_warehouse_id, parsed.data.to_warehouse_id]);
   const skuUnitMap = await fetchProductSkuUnitMap(parsed.data.items.map((it) => it.product_id));
+  const colorMap = await resolveItemColors(parsed.data.items);
 
   const supabase = getSupabaseClient();
   const { error: updErr } = await supabase
@@ -349,12 +364,17 @@ export async function updateTransfer(id: string, input: unknown, _user: SysUser)
   const { error: delErr } = await supabase.from('inv_transfer_items').delete().eq('transfer_id', id);
   if (delErr) throwDbError(delErr, '清理旧明细');
   const { error: iErr } = await supabase.from('inv_transfer_items').insert(
-    parsed.data.items.map((it) => ({
-      transfer_id: id,
-      product_id: it.product_id,
-      quantity: it.quantity,
-      unit: skuUnitMap.get(it.product_id)?.unit ?? null,
-    })),
+    parsed.data.items.map((it) => {
+      const colorCode = normalizeColorCode(it.color_code);
+      return {
+        transfer_id: id,
+        product_id: it.product_id,
+        quantity: it.quantity,
+        unit: skuUnitMap.get(it.product_id)?.unit ?? null,
+        color_code: colorCode,
+        color_name: colorNameOf(colorMap, it.product_id, colorCode),
+      };
+    }),
   );
   if (iErr) throwDbError(iErr, '写入调拨明细');
   return getTransfer(id);

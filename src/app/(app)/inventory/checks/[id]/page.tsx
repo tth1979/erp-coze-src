@@ -156,7 +156,14 @@ export default function CheckDetailPage() {
                     <TableRow key={item.id}>
                       <TableCell>
                         <div className="max-w-40 truncate font-medium text-stone-800">{item.product_name}</div>
-                        <div className="font-mono text-xs text-stone-500">{item.sku_code ?? ''}</div>
+                        <div className="font-mono text-xs text-stone-500">
+                          {item.sku_code ?? ''}
+                          {item.color_name
+                            ? ` · ${item.color_name}(${item.color_code})`
+                            : item.color_code
+                              ? ` · ${item.color_code}`
+                              : ''}
+                        </div>
                       </TableCell>
                       <TableCell className="text-right tabular-nums text-stone-700">
                         {formatQty(Number(item.book_quantity))} {item.unit ?? ''}

@@ -20,6 +20,7 @@ import {
   type ApprovalStepView,
 } from '@/server/approval/engine';
 import type { SysUser } from '@/storage/database/shared/schema';
+import { colorNameOf, normalizeColorCode, resolveItemColors } from '@/server/master-data/colors';
 
 export interface MoItemView {
   id: string;
@@ -34,6 +35,8 @@ export interface MoItemView {
   done_quantity: number;
   unit_cost: number;
   warehouse_id: string | null;
+  color_code: string | null;
+  color_name: string | null;
 }
 
 export interface MaOrderView {
@@ -66,6 +69,7 @@ export interface MaInputItem {
   kind: 'input' | 'output';
   product_id: string;
   quantity: number;
+  color_code?: string;
 }
 
 export interface MaCreateInput {
@@ -129,6 +133,8 @@ function serializeItem(row: Record<string, unknown>): MoItemView {
     done_quantity: Number(row.done_quantity ?? 0),
     unit_cost: Number(row.unit_cost ?? 0),
     warehouse_id: (row.warehouse_id as string | null) ?? null,
+    color_code: (row.color_code as string | null) ?? null,
+    color_name: (row.color_name as string | null) ?? null,
   };
 }
 
@@ -250,6 +256,7 @@ export async function createManufacturing(input: MaCreateInput, user: SysUser): 
   const docNo = await nextDocNo('MA', 'ma_manufacturing_orders', 'doc_no');
   const pids = input.items.map((i) => i.product_id);
   const info = await fetchProductInfo(pids);
+  const colors = await resolveItemColors(input.items.map((i) => ({ product_id: i.product_id, color_code: i.color_code })));
   let estimate = 0;
   let lineNo = 0;
   for (const it of input.items) {
@@ -289,6 +296,8 @@ export async function createManufacturing(input: MaCreateInput, user: SysUser): 
       unit_cost: it.kind === 'input' ? (p.refPrice || 0) : 0,
       done_quantity: 0,
       warehouse_id: null,
+      color_code: normalizeColorCode(it.color_code) || '',
+      color_name: colorNameOf(colors, it.product_id, it.color_code),
     };
   });
   const { error: iErr } = await supabase.from('ma_manufacturing_items').insert(rows);
@@ -315,6 +324,7 @@ export async function updateManufacturing(
     throw new ApiError(400, 'MA.BAD_TRANSITION', '仅草稿或已驳回的加工单可编辑');
   }
   const info = await fetchProductInfo(input.items.map((i) => i.product_id));
+  const colors = await resolveItemColors(input.items.map((i) => ({ product_id: i.product_id, color_code: i.color_code })));
   let estimate = 0;
   for (const it of input.items) {
     if (it.kind === 'input') estimate += Number(it.quantity) * (info.get(it.product_id)?.refPrice ?? 0);
@@ -347,6 +357,8 @@ export async function updateManufacturing(
       unit_cost: it.kind === 'input' ? (p?.refPrice ?? 0) : 0,
       done_quantity: 0,
       warehouse_id: null,
+      color_code: normalizeColorCode(it.color_code) || '',
+      color_name: colorNameOf(colors, it.product_id, it.color_code),
     };
   });
   const { error: insErr } = await supabase.from('ma_manufacturing_items').insert(rows);
@@ -411,6 +423,7 @@ function throwMaRpcError(e: { message?: string }, action: string): never {
 export interface MoExecItem {
   product_id: string;
   quantity: number;
+  color_code?: string;
 }
 
 /** 分批领料：扣原料库存（移动加权均价） */
@@ -422,7 +435,7 @@ export async function issueManufacturing(
 ): Promise<{ issued_cost: number }> {
   if (!items || items.length === 0) throw new ApiError(400, 'MA.BAD_PARAM', '请选择领料明细');
   const supabase = getSupabaseClient();
-  const payload = items.map((i) => ({ product_id: i.product_id, quantity: Number(i.quantity) }));
+  const payload = items.map((i) => ({ product_id: i.product_id, quantity: Number(i.quantity), color_code: normalizeColorCode(i.color_code) }));
   const { data, error } = await supabase.rpc('mo_execute_issue', {
     p_mo_id: id,
     p_warehouse_id: warehouseId,
@@ -442,7 +455,7 @@ export async function finishManufacturing(
 ): Promise<{ allocated_cost: number }> {
   if (!items || items.length === 0) throw new ApiError(400, 'MA.BAD_PARAM', '请选择完工明细');
   const supabase = getSupabaseClient();
-  const payload = items.map((i) => ({ product_id: i.product_id, quantity: Number(i.quantity) }));
+  const payload = items.map((i) => ({ product_id: i.product_id, quantity: Number(i.quantity), color_code: normalizeColorCode(i.color_code) }));
   const { data, error } = await supabase.rpc('mo_execute_finish', {
     p_mo_id: id,
     p_warehouse_id: warehouseId,

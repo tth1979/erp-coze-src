@@ -32,7 +32,7 @@ export default function AlertsPage() {
         <div>
           <h1 className="text-lg font-bold text-stone-900">库存预警</h1>
           <p className="text-xs text-stone-500 sm:text-sm">
-            跨仓可用合计低于安全库存（商品主数据中维护，0 表示不预警）的商品清单
+            按商品 × 色号跨仓合计可用量低于安全库存（商品主数据中维护，0 表示不预警）的清单
           </p>
         </div>
         <Button variant="outline" size="sm" asChild>
@@ -75,11 +75,16 @@ export default function AlertsPage() {
           {/* 移动端：卡片清单 */}
           <div className="grid gap-2.5 lg:hidden">
             {list.items.map((row) => (
-              <div key={row.product_id} className="rounded-lg border border-amber-200 bg-amber-50/60 p-3.5 shadow-sm">
+              <div
+                key={`${row.product_id}-${row.color_code ?? ''}`}
+                className="rounded-lg border border-amber-200 bg-amber-50/60 p-3.5 shadow-sm"
+              >
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
                     <div className="truncate text-sm font-medium text-stone-900">{row.product_name}</div>
-                    <div className="mt-0.5 font-mono text-xs text-stone-500">{row.sku_code ?? '—'}</div>
+                    <div className="mt-0.5 font-mono text-xs text-stone-500">
+                      {row.sku_code ?? '—'} · {row.color_name ? `${row.color_name}(${row.color_code})` : '默认色'}
+                    </div>
                   </div>
                   <span className="shrink-0 text-base font-bold tabular-nums text-amber-700">
                     {formatQty(Number(row.total_available))}
@@ -111,6 +116,7 @@ export default function AlertsPage() {
                 <TableRow>
                   <TableHead>商品编码</TableHead>
                   <TableHead>商品名称</TableHead>
+                  <TableHead>色号</TableHead>
                   <TableHead>规格</TableHead>
                   <TableHead className="text-right">安全库存</TableHead>
                   <TableHead className="text-right">现有合计</TableHead>
@@ -123,9 +129,19 @@ export default function AlertsPage() {
                 {list.items.map((row) => {
                   const gap = Number(row.safety_stock) - Number(row.total_available);
                   return (
-                    <TableRow key={row.product_id} className="bg-amber-50/40">
+                    <TableRow key={`${row.product_id}-${row.color_code ?? ''}`} className="bg-amber-50/40">
                       <TableCell className="font-mono text-xs text-stone-500">{row.sku_code ?? '—'}</TableCell>
                       <TableCell className="font-medium text-stone-800">{row.product_name}</TableCell>
+                      <TableCell className="text-xs text-stone-600">
+                        {row.color_name ? (
+                          <span>
+                            {row.color_name}
+                            <span className="ml-1 font-mono text-stone-400">{row.color_code}</span>
+                          </span>
+                        ) : (
+                          <span className="text-stone-400">默认色</span>
+                        )}
+                      </TableCell>
                       <TableCell className="text-stone-600">{row.spec ?? '—'}</TableCell>
                       <TableCell className="text-right tabular-nums text-stone-700">
                         {formatQty(Number(row.safety_stock))}

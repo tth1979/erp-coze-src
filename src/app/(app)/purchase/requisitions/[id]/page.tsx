@@ -166,6 +166,7 @@ export default function RequisitionDetailPage() {
             <TableRow>
               <TableHead className="w-10">#</TableHead>
               <TableHead>商品</TableHead>
+              <TableHead>色号</TableHead>
               <TableHead className="text-right">数量</TableHead>
               <TableHead className="text-right">建议价</TableHead>
               <TableHead className="text-right">预估金额</TableHead>
@@ -179,6 +180,9 @@ export default function RequisitionDetailPage() {
                   <div className="text-sm text-stone-800">{item.product_name ?? '商品已删除'}</div>
                   <div className="font-mono text-xs text-stone-500">{item.product_sku ?? ''}</div>
                 </TableCell>
+                <TableCell className="text-xs text-stone-600">
+                  {item.color_code ? (item.color_name ?? item.color_code) : <span className="text-stone-400">默认色</span>}
+                </TableCell>
                 <TableCell className="text-right tabular-nums">
                   {item.quantity}
                   {item.unit ?? ''}
@@ -188,7 +192,7 @@ export default function RequisitionDetailPage() {
               </TableRow>
             ))}
             <TableRow className="bg-stone-50">
-              <TableCell colSpan={4} className="text-right text-sm font-medium text-stone-600">
+              <TableCell colSpan={5} className="text-right text-sm font-medium text-stone-600">
                 合计
               </TableCell>
               <TableCell className="text-right text-base font-bold tabular-nums text-stone-900">

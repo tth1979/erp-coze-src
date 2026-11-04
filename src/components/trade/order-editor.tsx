@@ -36,8 +36,17 @@ interface PartyOption {
 interface EditableItem {
   key: number;
   productId: string;
+  colorCode: string;
   quantity: string;
   unitPrice: string;
+}
+
+/** 色号选项（/api/md/colors 返回项） */
+interface ColorOption {
+  product_id: string;
+  color_code: string;
+  color_name: string;
+  status: string;
 }
 
 export type TradeKind = 'purchase' | 'sales';
@@ -102,6 +111,7 @@ export function OrderEditor({ kind, mode, initial, onSaved, onCancel }: OrderEdi
   const [remark, setRemark] = useState(initial?.remark ?? '');
   const [warehouseId, setWarehouseId] = useState(initial?.warehouse_id ?? '');
   const [items, setItems] = useState<EditableItem[]>([]);
+  const [colorsMap, setColorsMap] = useState<Map<string, ColorOption[]>>(new Map());
   const [submitting, setSubmitting] = useState(false);
   const keyRef = useRef(1);
 
@@ -118,10 +128,19 @@ export function OrderEditor({ kind, mode, initial, onSaved, onCancel }: OrderEdi
     Promise.all([
       apiFetch<{ items: PartyOption[] }>(cfg.partyListEndpoint),
       apiFetch<{ items: Product[] }>('/api/md/products?page=1&pageSize=100'),
+      apiFetch<{ items: ColorOption[] }>('/api/md/colors'),
     ])
-      .then(([p, g]) => {
+      .then(([p, g, c]) => {
         setParties(p.items);
         setProducts(g.items);
+        const map = new Map<string, ColorOption[]>();
+        for (const color of c.items) {
+          if (color.status !== 'active') continue;
+          const arr = map.get(color.product_id) ?? [];
+          arr.push(color);
+          map.set(color.product_id, arr);
+        }
+        setColorsMap(map);
       })
       .catch((error: unknown) => {
         toast.error(error instanceof ApiClientError ? error.message : '基础资料加载失败');
@@ -138,6 +157,7 @@ export function OrderEditor({ kind, mode, initial, onSaved, onCancel }: OrderEdi
         initial.items.map((item: TradeOrderItem) => ({
           key: keyRef.current++,
           productId: item.product_id,
+          colorCode: (item as TradeOrderItem & { color_code?: string | null }).color_code ?? '',
           quantity: String(item.quantity),
           unitPrice: String(item.unit_price),
         })),
@@ -149,13 +169,13 @@ export function OrderEditor({ kind, mode, initial, onSaved, onCancel }: OrderEdi
   // 新建模式：默认给一行空明细
   useEffect(() => {
     if (mode === 'create' && items.length === 0) {
-      setItems([{ key: keyRef.current++, productId: '', quantity: '', unitPrice: '' }]);
+      setItems([{ key: keyRef.current++, productId: '', colorCode: '', quantity: '', unitPrice: '' }]);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode]);
 
   function addItem() {
-    setItems((prev) => [...prev, { key: keyRef.current++, productId: '', quantity: '', unitPrice: '' }]);
+    setItems((prev) => [...prev, { key: keyRef.current++, productId: '', colorCode: '', quantity: '', unitPrice: '' }]);
   }
 
   function removeItem(key: number) {
@@ -169,7 +189,7 @@ export function OrderEditor({ kind, mode, initial, onSaved, onCancel }: OrderEdi
   function onSelectProduct(key: number, productId: string) {
     const product = products?.find((p) => p.id === productId);
     const row = items.find((item) => item.key === key);
-    const patch: Partial<EditableItem> = { productId };
+    const patch: Partial<EditableItem> = { productId, colorCode: '' }; // 换商品重置色号，避免串色
     // 单价为空时带入参考价
     const referencePrice = product?.[cfg.prefillPriceField];
     if (referencePrice && (!row || row.unitPrice === '')) {
@@ -201,12 +221,16 @@ export function OrderEditor({ kind, mode, initial, onSaved, onCancel }: OrderEdi
   function validate(): string | null {
     if (!partyId) return `请选择${cfg.partyLabel}`;
     if (items.length === 0) return '至少需要一行明细';
+    const seen = new Set<string>();
     for (const [index, item] of items.entries()) {
       if (!item.productId) return `第 ${index + 1} 行：请选择商品`;
       const qty = Number(item.quantity);
       if (!Number.isFinite(qty) || qty <= 0) return `第 ${index + 1} 行：数量必须大于 0`;
       const price = Number(item.unitPrice);
       if (!Number.isFinite(price) || price < 0) return `第 ${index + 1} 行：单价不能为负`;
+      const unitKey = `${item.productId}|${item.colorCode}`;
+      if (seen.has(unitKey)) return `第 ${index + 1} 行：同型号同色号重复，请合并为一行`;
+      seen.add(unitKey);
     }
     return null;
   }
@@ -225,6 +249,7 @@ export function OrderEditor({ kind, mode, initial, onSaved, onCancel }: OrderEdi
         warehouse_id: warehouseId || undefined,
         items: items.map((item) => ({
           product_id: item.productId,
+          color_code: item.colorCode || undefined,
           quantity: Number(item.quantity),
           unit_price: Number(item.unitPrice),
         })),
@@ -319,10 +344,11 @@ export function OrderEditor({ kind, mode, initial, onSaved, onCancel }: OrderEdi
               Number.isFinite(qty) && Number.isFinite(price) && item.quantity !== '' && item.unitPrice !== ''
                 ? qty * price
                 : null;
+            const productColors = colorsMap.get(item.productId) ?? [];
             return (
               <div
                 key={item.key}
-                className="grid grid-cols-2 items-end gap-2 rounded-md border border-stone-200 p-3 md:grid-cols-[1fr_110px_130px_110px_36px] md:border-0 md:p-0"
+                className="grid grid-cols-2 items-end gap-2 rounded-md border border-stone-200 p-3 md:grid-cols-[1fr_120px_100px_120px_100px_36px] md:border-0 md:p-0"
               >
                 <div className="col-span-2 space-y-1 md:col-span-1">
                   <Label className="text-xs text-stone-500">商品 {index + 1}</Label>
@@ -338,6 +364,26 @@ export function OrderEditor({ kind, mode, initial, onSaved, onCancel }: OrderEdi
                         <SelectItem key={product.id} value={product.id}>
                           {product.sku_code} · {product.name}
                           {product.spec ? ` · ${product.spec}` : ''}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs text-stone-500">色号</Label>
+                  <Select
+                    value={item.colorCode || '__default__'}
+                    onValueChange={(value) => updateItem(item.key, { colorCode: value === '__default__' ? '' : value })}
+                    disabled={!item.productId}
+                  >
+                    <SelectTrigger className="w-full">
+                      <SelectValue placeholder="默认色" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__default__">默认（不分色）</SelectItem>
+                      {productColors.map((c) => (
+                        <SelectItem key={c.color_code} value={c.color_code}>
+                          {c.color_code} · {c.color_name}
                         </SelectItem>
                       ))}
                     </SelectContent>

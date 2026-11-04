@@ -25,10 +25,13 @@ function formatQty(value: number): string {
 export default function BatchesPage() {
   const [searchInput, setSearchInput] = useState('');
   const [warehouseId, setWarehouseId] = useState('');
+  const [colorCode, setColorCode] = useState('');
+  const [colorInput, setColorInput] = useState('');
   const [inStockOnly, setInStockOnly] = useState(true);
   const list = usePagedList<InvBatch>('/api/inv/batches', 10, {
     warehouse_id: warehouseId,
     in_stock: inStockOnly ? '1' : '',
+    color_code: colorCode,
   });
 
   return (
@@ -58,7 +61,28 @@ export default function BatchesPage() {
             setWarehouseId(v);
           }}
         />
-        <Button variant="outline" size="sm" onClick={() => list.setKeyword(searchInput)} aria-label="搜索">
+        <Input
+          value={colorInput}
+          onChange={(e) => setColorInput(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              list.setPage(1);
+              setColorCode(colorInput.trim());
+            }
+          }}
+          placeholder="色号编码过滤"
+          className="h-9 w-full sm:w-32"
+        />
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => {
+            list.setKeyword(searchInput);
+            list.setPage(1);
+            setColorCode(colorInput.trim());
+          }}
+          aria-label="搜索"
+        >
           <Search className="h-4 w-4 sm:mr-1" />
           <span className="hidden sm:inline">搜索</span>
         </Button>
@@ -100,7 +124,10 @@ export default function BatchesPage() {
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
                       <div className="truncate text-sm font-medium text-stone-900">{row.product_name}</div>
-                      <div className="mt-0.5 font-mono text-xs text-stone-500">{row.batch_no}</div>
+                      <div className="mt-0.5 font-mono text-xs text-stone-500">
+                        {row.batch_no}
+                        {row.color_name ? ` · ${row.color_name}` : row.color_code ? ` · ${row.color_code}` : ''}
+                      </div>
                     </div>
                     <span
                       className={`shrink-0 text-base font-bold tabular-nums ${
@@ -136,6 +163,7 @@ export default function BatchesPage() {
                 <TableRow>
                   <TableHead>批号（入库单号）</TableHead>
                   <TableHead>商品</TableHead>
+                  <TableHead>色号</TableHead>
                   <TableHead>仓库</TableHead>
                   <TableHead className="text-right">入库量</TableHead>
                   <TableHead className="text-right">已耗量</TableHead>
@@ -153,6 +181,18 @@ export default function BatchesPage() {
                       <TableCell>
                         <div className="text-sm text-stone-800">{row.product_name}</div>
                         <div className="font-mono text-xs text-stone-500">{row.sku_code ?? ''}</div>
+                      </TableCell>
+                      <TableCell className="text-xs text-stone-600">
+                        {row.color_name ? (
+                          <span>
+                            {row.color_name}
+                            <span className="ml-1 font-mono text-stone-400">{row.color_code}</span>
+                          </span>
+                        ) : row.color_code ? (
+                          <span className="font-mono">{row.color_code}</span>
+                        ) : (
+                          <span className="text-stone-400">默认色</span>
+                        )}
                       </TableCell>
                       <TableCell className="text-stone-600">{row.warehouse_name ?? '—'}</TableCell>
                       <TableCell className="text-right tabular-nums text-stone-700">

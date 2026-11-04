@@ -111,6 +111,8 @@ export interface PurchaseOrderItem {
   product_name: string | null;
   product_sku: string | null;
   product_spec: string | null;
+  color_code: string | null;
+  color_name: string | null;
   quantity: number;
   unit_price: number;
   amount: number;
@@ -183,6 +185,8 @@ export interface PoRequisition {
     product_id: string;
     product_name: string | null;
     product_sku: string | null;
+    color_code: string | null;
+    color_name: string | null;
     quantity: number;
     suggest_price: number;
     amount: number;
@@ -218,6 +222,8 @@ export interface PoReceipt {
     product_id: string;
     product_name: string | null;
     product_sku: string | null;
+    color_code: string | null;
+    color_name: string | null;
     quantity: number;
     unit_price: number;
     amount: number;
@@ -252,6 +258,8 @@ export interface PoReturn {
     product_id: string;
     product_name: string | null;
     product_sku: string | null;
+    color_code: string | null;
+    color_name: string | null;
     quantity: number;
     unit_price: number;
     amount: number;
@@ -270,6 +278,8 @@ export interface SalesOrderItem {
   product_name: string | null;
   product_sku: string | null;
   product_spec: string | null;
+  color_code: string | null;
+  color_name: string | null;
   quantity: number;
   unit_price: number;
   amount: number;
@@ -332,6 +342,8 @@ export interface SoShipment {
     product_id: string;
     product_name: string | null;
     product_sku: string | null;
+    color_code: string | null;
+    color_name: string | null;
     quantity: number;
     unit_price: number;
     amount: number;
@@ -368,6 +380,8 @@ export interface SoReturn {
     product_id: string;
     product_name: string | null;
     product_sku: string | null;
+    color_code: string | null;
+    color_name: string | null;
     quantity: number;
     unit_price: number;
     amount: number;
@@ -404,6 +418,9 @@ export interface StockItem {
   sku_code: string | null;
   spec: string | null;
   unit: string | null;
+  /** 色号（''/null = 默认色） */
+  color_code: string | null;
+  color_name: string | null;
   /** 所属仓库 */
   warehouse_id: string;
   warehouse_name: string | null;
@@ -429,6 +446,8 @@ export interface StockMovement {
   product_name: string;
   sku_code: string | null;
   unit: string | null;
+  /** 色号（''/null = 默认色） */
+  color_code: string | null;
   /** 发生仓库 */
   warehouse_id: string | null;
   warehouse_name: string | null;
@@ -465,6 +484,8 @@ export interface InvBatch {
   product_name: string;
   sku_code: string | null;
   unit: string | null;
+  color_code: string | null;
+  color_name: string | null;
   warehouse_id: string;
   warehouse_name: string | null;
   batch_no: string;
@@ -478,13 +499,15 @@ export interface InvBatch {
   created_at: string;
 }
 
-/** 库存预警条目（跨仓可用合计 ≤ 安全库存） */
+/** 库存预警条目（按 商品×色号 跨仓可用合计 ≤ 安全库存） */
 export interface InvAlert {
   product_id: string;
   product_name: string;
   sku_code: string | null;
   spec: string | null;
   unit: string | null;
+  color_code: string | null;
+  color_name: string | null;
   safety_stock: number;
   total_quantity: number;
   total_available: number;
@@ -522,6 +545,8 @@ export interface InvTransferItem {
   product_name: string;
   sku_code: string | null;
   unit: string | null;
+  color_code: string | null;
+  color_name: string | null;
   quantity: number;
   /** 调出时移动加权成本快照 */
   unit_cost: number | null;
@@ -556,6 +581,8 @@ export interface InvCheckItem {
   product_name: string;
   sku_code: string | null;
   unit: string | null;
+  color_code: string | null;
+  color_name: string | null;
   /** 账面数量（建单快照） */
   book_quantity: number;
   /** 实盘数量 */

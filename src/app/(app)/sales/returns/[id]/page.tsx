@@ -111,6 +111,7 @@ export default function SalesReturnDetailPage() {
                 <TableRow>
                   <TableHead>商品</TableHead>
                   <TableHead>编码</TableHead>
+                  <TableHead>色号</TableHead>
                   <TableHead className="text-right">数量</TableHead>
                   <TableHead className="text-right">单价</TableHead>
                   <TableHead className="text-right">金额</TableHead>
@@ -122,6 +123,9 @@ export default function SalesReturnDetailPage() {
                   <TableRow key={item.id}>
                     <TableCell className="max-w-40 truncate font-medium text-stone-800">{item.product_name}</TableCell>
                     <TableCell className="font-mono text-xs text-stone-600">{item.product_sku ?? '—'}</TableCell>
+                    <TableCell className="text-xs text-stone-600">
+                      {item.color_code ? (item.color_name ?? item.color_code) : <span className="text-stone-400">默认色</span>}
+                    </TableCell>
                     <TableCell className="text-right tabular-nums">
                       {item.quantity} {item.unit}
                     </TableCell>

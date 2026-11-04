@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { Pencil, Plus, Search, Trash2 } from 'lucide-react';
+import { Palette, Pencil, Plus, Search, Trash2 } from 'lucide-react';
 import { useAuth } from '@/components/auth/auth-provider';
 import { usePagedList } from '@/lib/use-paged-list';
 import type { Product } from '@/lib/types';
@@ -20,6 +20,7 @@ import { PaginationControls } from '@/components/master-data/pagination-controls
 import { StatusBadge } from '@/components/master-data/status-badge';
 import { DeleteConfirmDialog } from '@/components/master-data/delete-confirm-dialog';
 import { ProductFormDialog } from '@/components/master-data/product-form-dialog';
+import { ProductColorsDialog } from '@/components/master-data/product-colors-dialog';
 
 export default function ProductsPage() {
   const { can } = useAuth();
@@ -29,6 +30,7 @@ export default function ProductsPage() {
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<Product | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Product | null>(null);
+  const [colorTarget, setColorTarget] = useState<Product | null>(null);
 
   return (
     <div className="space-y-4">
@@ -90,31 +92,42 @@ export default function ProductsPage() {
                   </div>
                   <div className="mt-1 truncate text-sm font-medium text-stone-900">{p.name}</div>
                 </div>
-                {writable && (
-                  <div className="flex shrink-0 gap-1">
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-8 w-8"
-                      aria-label="编辑"
-                      onClick={() => {
-                        setEditing(p);
-                        setFormOpen(true);
-                      }}
-                    >
-                      <Pencil className="h-4 w-4" />
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="h-8 w-8"
-                      aria-label="删除"
-                      onClick={() => setDeleteTarget(p)}
-                    >
-                      <Trash2 className="h-4 w-4 text-destructive" />
-                    </Button>
-                  </div>
-                )}
+                <div className="flex shrink-0 gap-1">
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8"
+                    aria-label="色号管理"
+                    onClick={() => setColorTarget(p)}
+                  >
+                    <Palette className="h-4 w-4" />
+                  </Button>
+                  {writable && (
+                    <>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8"
+                        aria-label="编辑"
+                        onClick={() => {
+                          setEditing(p);
+                          setFormOpen(true);
+                        }}
+                      >
+                        <Pencil className="h-4 w-4" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8"
+                        aria-label="删除"
+                        onClick={() => setDeleteTarget(p)}
+                      >
+                        <Trash2 className="h-4 w-4 text-destructive" />
+                      </Button>
+                    </>
+                  )}
+                </div>
               </div>
               <div className="mt-2.5 grid grid-cols-2 gap-x-3 gap-y-1.5 text-xs">
                 <div>
@@ -164,21 +177,21 @@ export default function ProductsPage() {
               <TableHead>品类</TableHead>
               <TableHead className="text-right">参考售价</TableHead>
               <TableHead>状态</TableHead>
-              {writable && <TableHead className="w-24 text-right">操作</TableHead>}
+              <TableHead className="w-28 text-right">操作</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {list.loading ? (
               Array.from({ length: 5 }).map((_, i) => (
                 <TableRow key={i}>
-                  <TableCell colSpan={writable ? 10 : 9}>
+                  <TableCell colSpan={10}>
                     <Skeleton className="h-6 w-full" />
                   </TableCell>
                 </TableRow>
               ))
             ) : list.items.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={writable ? 10 : 9} className="py-10 text-center text-muted-foreground">
+                <TableCell colSpan={10} className="py-10 text-center text-muted-foreground">
                   暂无商品数据
                 </TableCell>
               </TableRow>
@@ -198,25 +211,36 @@ export default function ProductsPage() {
                   <TableCell>
                     <StatusBadge status={p.status} />
                   </TableCell>
-                  {writable && (
-                    <TableCell className="text-right">
-                      <div className="flex justify-end gap-1">
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          onClick={() => {
-                            setEditing(p);
-                            setFormOpen(true);
-                          }}
-                        >
-                          <Pencil className="h-4 w-4" />
-                        </Button>
-                        <Button variant="ghost" size="icon" onClick={() => setDeleteTarget(p)}>
-                          <Trash2 className="h-4 w-4 text-destructive" />
-                        </Button>
-                      </div>
-                    </TableCell>
-                  )}
+                  <TableCell className="text-right">
+                    <div className="flex justify-end gap-1">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        aria-label="色号管理"
+                        onClick={() => setColorTarget(p)}
+                      >
+                        <Palette className="h-4 w-4" />
+                      </Button>
+                      {writable && (
+                        <>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            aria-label="编辑"
+                            onClick={() => {
+                              setEditing(p);
+                              setFormOpen(true);
+                            }}
+                          >
+                            <Pencil className="h-4 w-4" />
+                          </Button>
+                          <Button variant="ghost" size="icon" aria-label="删除" onClick={() => setDeleteTarget(p)}>
+                            <Trash2 className="h-4 w-4 text-destructive" />
+                          </Button>
+                        </>
+                      )}
+                    </div>
+                  </TableCell>
                 </TableRow>
               ))
             )}
@@ -228,6 +252,14 @@ export default function ProductsPage() {
       </div>
 
       <ProductFormDialog open={formOpen} onOpenChange={setFormOpen} initial={editing} onSaved={list.reload} />
+      <ProductColorsDialog
+        open={colorTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) setColorTarget(null);
+        }}
+        product={colorTarget}
+        readonly={!writable}
+      />
       <DeleteConfirmDialog
         open={deleteTarget !== null}
         onOpenChange={(open) => {

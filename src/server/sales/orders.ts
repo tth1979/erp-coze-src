@@ -13,6 +13,7 @@ import { z } from 'zod';
 import { approveCurrentStep, listSteps, rejectCurrentStep, submitDocument, type ApprovalStepView } from '@/server/approval/engine';
 import { nextDocNo } from '@/server/doc-no';
 import { ApiError } from '@/server/http';
+import { colorNameOf, normalizeColorCode, resolveItemColors } from '@/server/master-data/colors';
 import { throwInventoryRpcError } from '@/server/inventory/shared';
 import { emptyToNull, escapeOrKeyword, throwDbError, type ListQuery, type PagedResult } from '@/server/master-data/helpers';
 import { getSupabaseClient } from '@/storage/database/supabase-client';
@@ -33,6 +34,9 @@ export interface SalesOrderItemView {
   unit_price: number;
   amount: number;
   unit: string | null;
+  /** 色号（0022；''=默认色） */
+  color_code: string;
+  color_name: string | null;
 }
 
 export interface SalesOrderView {
@@ -73,6 +77,8 @@ const itemSchema = z.object({
   product_id: uuid,
   quantity: z.number().positive('数量必须大于 0').max(9_999_999, '数量超出范围'),
   unit_price: z.number().min(0, '单价不能为负').max(99_999_999, '单价超出范围'),
+  /** 色号编码（可空，空=默认色；非空须在商品色号档案内且 active） */
+  color_code: z.string().max(32, '色号编码不能超过 32 字').optional(),
 });
 
 export const orderUpsertSchema = z.object({
@@ -167,6 +173,8 @@ interface PreparedItem {
   unit_price: number;
   amount: number;
   unit: string | null;
+  color_code: string;
+  color_name: string | null;
 }
 
 /** 校验客户与商品存在性，计算行金额与总额 */
@@ -193,16 +201,29 @@ async function prepareItems(input: OrderUpsertInput): Promise<{ items: PreparedI
     if (!productMap.has(pid)) throw new ApiError(400, 'SO.PRODUCT_NOT_FOUND', '存在无效商品，请刷新后重试');
   }
 
+  // 色号解析与校验（非空色号须在商品色号档案内且 active）
+  const colorMap = await resolveItemColors(input.items);
+  // 同一单据行 型号+色号 唯一不冲突
+  const seen = new Set<string>();
+  for (const item of input.items) {
+    const key = `${item.product_id}|${normalizeColorCode(item.color_code)}`;
+    if (seen.has(key)) throw new ApiError(400, 'SO.ITEM_DUPLICATED', '同一单据中相同商品+色号不能重复，请合并数量');
+    seen.add(key);
+  }
+
   let total = 0;
   const items: PreparedItem[] = input.items.map((item) => {
     const amount = Math.round(item.quantity * item.unit_price * 100) / 100;
     total = Math.round((total + amount) * 100) / 100;
+    const colorCode = normalizeColorCode(item.color_code);
     return {
       product_id: item.product_id,
       quantity: item.quantity,
       unit_price: item.unit_price,
       amount,
       unit: (productMap.get(item.product_id)?.unit as string | null) ?? null,
+      color_code: colorCode,
+      color_name: colorNameOf(colorMap, item.product_id, colorCode),
     };
   });
   return { items, total };
@@ -332,6 +353,8 @@ export async function getOrder(id: string): Promise<SalesOrderView> {
     unit_price: toNumber(item.unit_price),
     amount: toNumber(item.amount),
     unit: item.unit,
+    color_code: (item as SoSalesOrderItem).color_code ?? '',
+    color_name: (item as SoSalesOrderItem).color_name ?? null,
   }));
 
   return serialize(row, {

@@ -26,6 +26,7 @@ function round2(n: number): number {
 export interface StockStateRow {
   product_id: string;
   warehouse_id: string;
+  color_code?: string; // 0022 起库存最小单元含色号（''=默认色）
   quantity: number;
   frozen_quantity: number;
   in_transit: number;
@@ -69,24 +70,31 @@ export function evalQuantityState(rows: StockStateRow[]): AssertionOutcome {
 export interface BatchRow {
   product_id: string;
   warehouse_id: string;
+  color_code?: string;
   remaining_quantity: number;
   unit_cost: number;
+}
+
+/** 库存最小管理单元分组键：商品×仓×色号（色号缺省='' 兼容旧数据） */
+function unitKey(productId: string, warehouseId: string, colorCode?: string): string {
+  return `${productId}|${warehouseId}|${colorCode ?? ''}`;
 }
 
 export function evalBatchClosure(stocks: StockStateRow[], batches: BatchRow[]): AssertionOutcome {
   const batchSum = new Map<string, number>();
   for (const b of batches) {
-    const key = `${b.product_id}|${b.warehouse_id}`;
+    const key = unitKey(b.product_id, b.warehouse_id, b.color_code);
     batchSum.set(key, (batchSum.get(key) ?? 0) + b.remaining_quantity);
   }
   const mismatches: Array<Record<string, unknown>> = [];
   for (const s of stocks) {
-    const key = `${s.product_id}|${s.warehouse_id}`;
+    const key = unitKey(s.product_id, s.warehouse_id, s.color_code);
     const bs = batchSum.get(key) ?? 0;
     if (Math.abs(bs - s.quantity) > EPS_QTY) {
       mismatches.push({
         product_id: s.product_id,
         warehouse_id: s.warehouse_id,
+        color_code: s.color_code ?? '',
         stock_quantity: s.quantity,
         batch_remaining_sum: round2(bs),
         diff: round2(bs - s.quantity),
@@ -94,11 +102,11 @@ export function evalBatchClosure(stocks: StockStateRow[], batches: BatchRow[]): 
     }
   }
   // 反向孤儿批次：有批次余量但无库存行
-  const stockKeys = new Set(stocks.map((s) => `${s.product_id}|${s.warehouse_id}`));
+  const stockKeys = new Set(stocks.map((s) => unitKey(s.product_id, s.warehouse_id, s.color_code)));
   for (const [key, v] of batchSum) {
     if (!stockKeys.has(key) && Math.abs(v) > EPS_QTY) {
-      const [product_id, warehouse_id] = key.split('|');
-      mismatches.push({ product_id, warehouse_id, stock_quantity: 0, batch_remaining_sum: round2(v), diff: round2(v), orphan: true });
+      const [product_id, warehouse_id, color_code] = key.split('|');
+      mismatches.push({ product_id, warehouse_id, color_code, stock_quantity: 0, batch_remaining_sum: round2(v), diff: round2(v), orphan: true });
     }
   }
   if (mismatches.length > 0) {
@@ -120,6 +128,7 @@ export interface LedgerRow {
   id: string;
   product_id: string;
   warehouse_id: string;
+  color_code?: string;
   quantity: number; // 带符号
   balance: number;  // 变动后余额快照
   ref_no: string | null;
@@ -130,11 +139,11 @@ export function evalLedgerConservation(
   ledger: LedgerRow[],
   stocks: StockStateRow[],
 ): AssertionOutcome {
-  // 按 商品×仓 分组，按 created_at 排序；同时间戳（同事务多行）用余额链贪心还原先后：
+  // 按 商品×仓×色号 分组，按 created_at 排序；同时间戳（同事务多行）用余额链贪心还原先后：
   // 逐步从剩余行中挑 balance-quantity==running 的行，找不到即判断链。
   const groups = new Map<string, LedgerRow[]>();
   for (const row of ledger) {
-    const key = `${row.product_id}|${row.warehouse_id}`;
+    const key = unitKey(row.product_id, row.warehouse_id, row.color_code);
     const arr = groups.get(key) ?? [];
     arr.push(row);
     groups.set(key, arr);
@@ -143,7 +152,7 @@ export function evalLedgerConservation(
   let chainChecked = 0;
   for (const [key, rows] of groups) {
     rows.sort((a, b) => (a.created_at === b.created_at ? (a.id < b.id ? -1 : 1) : a.created_at < b.created_at ? -1 : 1));
-    const [product_id, warehouse_id] = key.split('|');
+    const [product_id, warehouse_id, color_code] = key.split('|');
     let running: number | null = null; // 链上当前余额
     let i = 0;
     while (i < rows.length) {
@@ -192,11 +201,12 @@ export function evalLedgerConservation(
       i = j;
     }
     // 链末余额与库存余额一致
-    const stock = stocks.find((s) => s.product_id === product_id && s.warehouse_id === warehouse_id);
+    const stock = stocks.find((s) => s.product_id === product_id && s.warehouse_id === warehouse_id && (s.color_code ?? '') === (color_code ?? ''));
     if (running !== null && stock && Math.abs(running - stock.quantity) > EPS_QTY) {
       broken.push({
         product_id,
         warehouse_id,
+        color_code,
         ledger_tail_balance: round2(running),
         stock_quantity: stock.quantity,
         diff: round2(running - stock.quantity),

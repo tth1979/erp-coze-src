@@ -10,6 +10,7 @@ import { z } from 'zod';
 import { nextDocNo } from '@/server/doc-no';
 import { ApiError } from '@/server/http';
 import { emptyToNull, escapeOrKeyword, throwDbError, type ListQuery, type PagedResult } from '@/server/master-data/helpers';
+import { colorNameOf, normalizeColorCode, resolveItemColors } from '@/server/master-data/colors';
 import { approveCurrentStep, listSteps, rejectCurrentStep, submitDocument, type ApprovalStepView } from '@/server/approval/engine';
 import { getSupabaseClient } from '@/storage/database/supabase-client';
 import type { PoReturn, PoReturnItem, SysUser } from '@/storage/database/shared/schema';
@@ -27,6 +28,8 @@ export interface ReturnItemView {
   unit_price: number;
   amount: number;
   unit: string | null;
+  color_code: string | null;
+  color_name: string | null;
 }
 
 export interface ReturnView {
@@ -65,6 +68,8 @@ const itemSchema = z.object({
   product_id: uuid,
   quantity: z.number().positive('数量必须大于 0').max(9_999_999, '数量超出范围'),
   unit_price: z.number().min(0, '单价不能为负').max(99_999_999, '单价超出范围'),
+  /** 色号编码（库存最小管理单元维度）；''/省略=默认色 */
+  color_code: z.string().max(32, '色号编码不能超过 32 字').optional(),
 });
 
 export const returnCreateSchema = z.object({
@@ -248,6 +253,8 @@ export async function getReturn(id: string): Promise<ReturnView> {
     unit_price: toNumber(item.unit_price),
     amount: toNumber(item.amount),
     unit: item.unit,
+    color_code: (item as PoReturnItem).color_code ?? null,
+    color_name: (item as PoReturnItem).color_name ?? null,
   }));
 
   return serialize(row, {
@@ -308,11 +315,19 @@ export async function createReturn(input: ReturnCreateInput, operatorId: string)
     if (!productMap.has(pid)) throw new ApiError(400, 'PO.PRODUCT_NOT_FOUND', '存在无效商品');
   }
 
+  const colorMap = await resolveItemColors(input.items);
   let total = 0;
   const items = input.items.map((item) => {
+    const colorCode = normalizeColorCode(item.color_code);
     const amount = round2(item.quantity * item.unit_price);
     total = round2(total + amount);
-    return { ...item, amount, unit: (productMap.get(item.product_id)?.unit as string | null) ?? null };
+    return {
+      ...item,
+      color_code: colorCode,
+      color_name: colorNameOf(colorMap, item.product_id, colorCode),
+      amount,
+      unit: (productMap.get(item.product_id)?.unit as string | null) ?? null,
+    };
   });
 
   let row: PoReturn | null = null;

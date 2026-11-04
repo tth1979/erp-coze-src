@@ -16,6 +16,9 @@ export interface BatchRow {
   sku_code: string | null;
   unit: string | null;
   batch_no: string;
+  /** 色号编码（'' = 默认色） */
+  color_code: string;
+  color_name: string | null;
   unit_cost: string;
   initial_quantity: string;
   remaining_quantity: string;
@@ -29,6 +32,8 @@ interface BatchListQuery extends ListQuery {
   warehouse_id?: string;
   /** '1' = 仅看 remaining_quantity > 0 */
   in_stock?: string;
+  /** 按色号编码过滤 */
+  color_code?: string;
 }
 
 export async function listBatches(query: BatchListQuery): Promise<PagedResult<BatchRow>> {
@@ -55,6 +60,7 @@ export async function listBatches(query: BatchListQuery): Promise<PagedResult<Ba
       warehouse_id,
       product_id,
       batch_no,
+      color_code,
       unit_cost,
       initial_quantity,
       remaining_quantity,
@@ -73,6 +79,7 @@ export async function listBatches(query: BatchListQuery): Promise<PagedResult<Ba
 
   if (query.warehouse_id) req = req.eq('warehouse_id', query.warehouse_id);
   if (query.in_stock === '1') req = req.gt('remaining_quantity', 0);
+  if (query.color_code !== undefined) req = req.eq('color_code', query.color_code);
   if (kw) {
     if (productIds && productIds.length > 0) {
       req = req.or(`product_id.in.(${productIds.join(',')}),batch_no.ilike.%${kw}%`);
@@ -84,9 +91,23 @@ export async function listBatches(query: BatchListQuery): Promise<PagedResult<Ba
   const { data, error, count } = await req;
   if (error) throwDbError(error, '查询批次');
 
+  // 色号名称补全
+  const pidSet = [...new Set((data ?? []).map((r) => r.product_id as string))];
+  const colorPairs = new Map<string, string>();
+  if (pidSet.length > 0) {
+    const { data: colorRows } = await getSupabaseClient()
+      .from('md_product_colors')
+      .select('product_id, color_code, color_name')
+      .in('product_id', pidSet);
+    for (const c of colorRows ?? []) {
+      colorPairs.set(`${c.product_id as string}|${c.color_code as string}`, c.color_name as string);
+    }
+  }
+
   const items: BatchRow[] = (data ?? []).map((row) => {
     const product = (row.product ?? {}) as { name?: string; sku_code?: string | null; unit?: string | null };
     const warehouse = (row.warehouse ?? {}) as { name?: string };
+    const colorCode = (row.color_code as string) ?? '';
     return {
       id: row.id as string,
       warehouse_id: row.warehouse_id as string,
@@ -96,6 +117,8 @@ export async function listBatches(query: BatchListQuery): Promise<PagedResult<Ba
       sku_code: product.sku_code ?? null,
       unit: product.unit ?? null,
       batch_no: row.batch_no as string,
+      color_code: colorCode,
+      color_name: colorCode ? (colorPairs.get(`${row.product_id as string}|${colorCode}`) ?? null) : null,
       unit_cost: String(row.unit_cost),
       initial_quantity: String(row.initial_quantity),
       remaining_quantity: String(row.remaining_quantity),

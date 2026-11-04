@@ -21,14 +21,35 @@ import { Skeleton } from '@/components/ui/skeleton';
 export interface DocItemRow {
   key: string;
   productId: string;
+  colorCode: string;
   quantity: string;
   unitPrice: string;
 }
 
 let rowKey = 0;
-export function newDocItem(productId = '', quantity = '', unitPrice = ''): DocItemRow {
+export function newDocItem(productId = '', quantity = '', unitPrice = '', colorCode = ''): DocItemRow {
   rowKey += 1;
-  return { key: `row-${rowKey}`, productId, quantity, unitPrice };
+  return { key: `row-${rowKey}`, productId, colorCode, quantity, unitPrice };
+}
+
+/** 色号选项（/api/md/colors 返回项） */
+export interface ColorOption {
+  product_id: string;
+  color_code: string;
+  color_name: string;
+  status: string;
+}
+
+/** 按商品分组的活跃色号映射 */
+export function groupColorsByProduct(colors: ColorOption[]): Map<string, ColorOption[]> {
+  const map = new Map<string, ColorOption[]>();
+  for (const c of colors) {
+    if (c.status !== 'active') continue;
+    const arr = map.get(c.product_id) ?? [];
+    arr.push(c);
+    map.set(c.product_id, arr);
+  }
+  return map;
 }
 
 function formatMoney(value: number): string {
@@ -47,11 +68,15 @@ export function DocItemEditor({
   readOnly?: boolean;
 }) {
   const [products, setProducts] = useState<Product[] | null>(null);
+  const [colorsMap, setColorsMap] = useState<Map<string, ColorOption[]>>(new Map());
 
   useEffect(() => {
     apiFetch<{ items: Product[] }>('/api/md/products?page=1&pageSize=100')
       .then((res) => setProducts(res.items))
       .catch(() => setProducts([]));
+    apiFetch<{ items: ColorOption[] }>('/api/md/colors')
+      .then((res) => setColorsMap(groupColorsByProduct(res.items)))
+      .catch(() => setColorsMap(new Map()));
   }, []);
 
   function updateItem(key: string, patch: Partial<DocItemRow>) {
@@ -82,10 +107,11 @@ export function DocItemEditor({
             Number.isFinite(qty) && Number.isFinite(price) && item.quantity !== '' && item.unitPrice !== ''
               ? qty * price
               : null;
+          const productColors = colorsMap.get(item.productId) ?? [];
           return (
             <div
               key={item.key}
-              className="grid grid-cols-2 items-end gap-2 rounded-md border border-stone-200 p-3 md:grid-cols-[1fr_110px_130px_110px_36px] md:border-0 md:p-0"
+              className="grid grid-cols-2 items-end gap-2 rounded-md border border-stone-200 p-3 md:grid-cols-[1fr_120px_100px_120px_100px_36px] md:border-0 md:p-0"
             >
               <div className="col-span-2 space-y-1 md:col-span-1">
                 <Label className="text-xs text-stone-500">商品 {index + 1}</Label>
@@ -99,6 +125,7 @@ export function DocItemEditor({
                           ? {
                               ...it,
                               productId: value,
+                              colorCode: '', // 换商品后色号重置，避免串色
                               unitPrice: it.unitPrice || (product?.reference_purchase_price ?? ''),
                             }
                           : it,
@@ -115,6 +142,26 @@ export function DocItemEditor({
                       <SelectItem key={product.id} value={product.id}>
                         {product.sku_code} · {product.name}
                         {product.spec ? ` · ${product.spec}` : ''}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs text-stone-500">色号</Label>
+                <Select
+                  value={item.colorCode || '__default__'}
+                  onValueChange={(value) => updateItem(item.key, { colorCode: value === '__default__' ? '' : value })}
+                  disabled={readOnly || !item.productId}
+                >
+                  <SelectTrigger className="w-full">
+                    <SelectValue placeholder="默认色" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__default__">默认（不分色）</SelectItem>
+                    {productColors.map((c) => (
+                      <SelectItem key={c.color_code} value={c.color_code}>
+                        {c.color_code} · {c.color_name}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -183,16 +230,20 @@ export function DocItemEditor({
   );
 }
 
-/** 校验并组装提交明细（服务端字段） */
-export function buildDocItems(items: DocItemRow[]): Array<{ product_id: string; quantity: number; unit_price: number }> | null {
-  const built: Array<{ product_id: string; quantity: number; unit_price: number }> = [];
+/** 校验并组装提交明细（服务端字段；同一单据 型号+色号 不允许重复行） */
+export function buildDocItems(items: DocItemRow[]): Array<{ product_id: string; quantity: number; unit_price: number; color_code: string }> | null {
+  const built: Array<{ product_id: string; quantity: number; unit_price: number; color_code: string }> = [];
+  const seen = new Set<string>();
   for (const item of items) {
     if (!item.productId) return null;
     const quantity = Number(item.quantity);
     const unitPrice = Number(item.unitPrice);
     if (!Number.isFinite(quantity) || quantity <= 0) return null;
     if (!Number.isFinite(unitPrice) || unitPrice < 0) return null;
-    built.push({ product_id: item.productId, quantity, unit_price: unitPrice });
+    const unitKey = `${item.productId}|${item.colorCode}`;
+    if (seen.has(unitKey)) return null; // 同型号同色号重复行
+    seen.add(unitKey);
+    built.push({ product_id: item.productId, quantity, unit_price: unitPrice, color_code: item.colorCode });
   }
   return built.length > 0 ? built : null;
 }

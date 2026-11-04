@@ -13,7 +13,8 @@ export async function GET(request: NextRequest) {
     const query = parseListQuery(params);
     const warehouseId = (params.get('warehouse_id') ?? '').trim() || undefined;
     const inStock = (params.get('in_stock') ?? '').trim();
-    return ok(await listBatches({ ...query, warehouse_id: warehouseId, in_stock: inStock || undefined }));
+    const colorCode = (params.get('color_code') ?? '').trim() || undefined;
+    return ok(await listBatches({ ...query, warehouse_id: warehouseId, in_stock: inStock || undefined, color_code: colorCode }));
   } catch (error) {
     return handleError(error);
   }

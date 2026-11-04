@@ -124,6 +124,7 @@ export default function TransferDetailPage() {
                 <TableRow>
                   <TableHead>商品</TableHead>
                   <TableHead>编码</TableHead>
+                  <TableHead>色号</TableHead>
                   <TableHead className="text-right">调拨数量</TableHead>
                   <TableHead className="text-right">调出成本快照</TableHead>
                 </TableRow>
@@ -133,6 +134,16 @@ export default function TransferDetailPage() {
                   <TableRow key={item.id}>
                     <TableCell className="max-w-40 truncate font-medium text-stone-800">{item.product_name}</TableCell>
                     <TableCell className="font-mono text-xs text-stone-600">{item.sku_code ?? '—'}</TableCell>
+                    <TableCell className="text-xs text-stone-600">
+                      {item.color_name ? (
+                        <span>
+                          {item.color_name}
+                          <span className="ml-1 font-mono text-stone-400">{item.color_code}</span>
+                        </span>
+                      ) : (
+                        <span className="text-stone-400">默认色</span>
+                      )}
+                    </TableCell>
                     <TableCell className="text-right tabular-nums">
                       {formatQty(Number(item.quantity))} {item.unit ?? ''}
                     </TableCell>

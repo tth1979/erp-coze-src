@@ -59,6 +59,7 @@
 | 系统管理模块（已交付 V1） | `sys_*`（复用前缀） | 四粒度权限（sys_roles/sys_role_permissions/sys_user_roles）+ 参数中心 sys_settings + 审计日志 sys_audit_logs（只追加）+ 审批流配置（复用 po_approval_rules） |
 | 数据一致性+备份模块（已交付 V1） | `sys_*`（复用前缀） | sys_integrity_checks（七断言跑批，只追加）+ sys_backups（真实快照 payload jsonb）+ fail 阻断期末结账（可配置） |
 | 计量单位（周边，V1） | `md_units` | 基础资料扩充：计量单位档案 + 基准单位+换算系数 |
+| 商品色号档案（已交付 V1，0022） | `md_product_colors` | 商品色号档案：UNIQUE(product_id, color_code) + color_name + status active/disabled + 库存关联量；空色号 ''=默认色兼容存量 |
 | 加工模块（已交付 V1） | `ma_*` | 加工单 MO（类型/损耗/投入产出）+ 四级审批 + 分批领料/分批完工 + 加工成本雏形（按投入均价分摊入成品） |
 | 税务模块（已交付 V2 增强） | `tax_*` | 进/销项税登记 + 发票台账 + 异地预缴 + 税会差异 + 申报底稿 |
 
@@ -90,6 +91,8 @@
 | GET/PUT/DELETE | /api/md/suppliers/[id] | 同上 | 供应商 |
 | GET/POST | /api/md/products | 同上 | 商品主数据（型号/规格/单位/条形码） |
 | GET/PUT/DELETE | /api/md/products/[id] | 同上 | 商品 |
+| GET/POST | /api/md/colors | md.read / md.write | 色号档案列表（product_id 逗号分隔多商品过滤，含 stock_quantity 库存关联量）/ 新增（同商品 color_code 唯一 409 `MD.COLOR_DUPLICATED`） |
+| GET/PUT/DELETE | /api/md/colors/[id] | md.read / md.write | 色号详情 / 更新（编码不可改，可启停）/ 删除（有库存 400 `MD.COLOR_HAS_STOCK`） |
 | GET/POST | /api/po/orders | po.read / po.write | 采购订单分页列表（status 筛选）/ 新建（草稿） |
 | GET/PUT/DELETE | /api/po/orders/[id] | po.read / po.write | 订单详情（含明细+审批步骤）/ 更新（draft/rejected）/ 删除（仅 draft） |
 | POST | /api/po/orders/[id]/submit | po.write | 提交审批（draft/rejected→pending，按金额定级） |
@@ -244,11 +247,11 @@
 
 ### 库存模块约定（inv_*，V2 多仓 + 批次 + 调拨/盘点）
 
-- **表**：`inv_warehouses`（仓库档案，code 唯一，WH01 默认仓）、`inv_stock`（余额：(warehouse_id, product_id) 复合唯一；quantity 现有 / in_transit 在途 / frozen_quantity 冻结；可用量 = quantity − frozen）、`inv_stock_ledger`（原 inv_stock_movements 0008 改名；**只追加**流水：type in/out/adjust、quantity 带符号、balance 余额快照 **CHECK 非负**、warehouse_id FK、batch_id、source purchase_in/sales_out/purchase_return/receipt_reversal/sales_return_in/transfer_out/transfer_in/check_in/check_out/manual、unit_cost 成本快照、ref_no 关联单号、created_by FK→sys_users）、`inv_batches`（批次：(product_id, warehouse_id, batch_no) 唯一，批号=来源单号；initial_quantity 累计入库 / remaining_quantity FIFO 扣减 CHECK 非负；unit_cost 入库成本快照；production_date/expiry_date 效期）。流水不做 UPDATE/DELETE。
+- **表**：`inv_warehouses`（仓库档案，code 唯一，WH01 默认仓）、`inv_stock`（余额：0022 起 **(warehouse_id, product_id, color_code) 三元组复合唯一**——库存最小管理单元 = sku_code + color_code + batch_no + 仓库；quantity 现有 / in_transit 在途 / frozen_quantity 冻结；可用量 = quantity − frozen；color_code `''`=默认色兼容存量）、`inv_stock_ledger`（原 inv_stock_movements 0008 改名；**只追加**流水：type in/out/adjust、quantity 带符号、balance 余额快照 **CHECK 非负**、warehouse_id FK、batch_id、**color_code 色号快照**、source purchase_in/sales_out/purchase_return/receipt_reversal/sales_return_in/transfer_out/transfer_in/check_in/check_out/manual、unit_cost 成本快照、ref_no 关联单号、created_by FK→sys_users）、`inv_batches`（批次：0022 起 **(product_id, warehouse_id, batch_no, color_code) 唯一**，批号=来源单号；initial_quantity 累计入库 / remaining_quantity FIFO 扣减 CHECK 非负；unit_cost 入库成本快照；production_date/expiry_date 效期）。流水不做 UPDATE/DELETE。
 - **调拨/盘点单**：`inv_transfers`(IT) 状态机 draft→pending→approved(调出已出库/调入在途)→received(收货转库存)；`inv_checks`(IC) draft→pending→approved(差异已过账)；明细表 `_items`（调拨明细带 unit_cost 成本快照；盘点明细 book_quantity 账面快照/counted_quantity 实盘/difference 差异）。仅 draft 可删，draft/rejected 可编辑，draft/pending/rejected 可 closed。
-- **强一致联动**：plpgsql 数据库函数单事务完成（`db/migrations/0008_inventory.sql`）：
-  - `inv_apply_receipt_in(p_product, p_warehouse, p_qty, p_unit_cost, p_source, p_ref_no, p_remark, p_user)`：仓维度移动加权 + 批次 upsert + 台账。
-  - `inv_apply_issue_out(p_product, p_warehouse, p_qty, p_source, p_ref_no, p_remark, p_user)`：FIFO 扣批次剩余量 + 按均价出库，返回出库成本总额。
+- **强一致联动**：plpgsql 数据库函数单事务完成（`db/migrations/0008_inventory.sql` 原版，`0022_color_schema.sql` 色号化重写——入/出库/冻结/调拨/盘点函数末位追加 `p_color_code varchar DEFAULT ''` 兼容旧调用）：
+  - `inv_apply_receipt_in(..., p_user, p_color_code DEFAULT '')`：仓×色号维度移动加权 + 批次 upsert（含色号） + 台账。
+  - `inv_apply_issue_out(..., p_user, p_color_code DEFAULT '')`：**FIFO 仅扣同色号批次**（不串色） + 按均价出库，返回出库成本总额。
   - `inv_adjust_frozen`（冻结/解冻，行锁校验 0≤frozen≤quantity）、`inv_execute_transfer`（终审=调出出库+调入在途，超可用量 P0001）、`inv_receive_transfer`（在途转现有+批次入库）、`inv_execute_check`（差异过账：盘盈 check_in/盘亏 check_out+台账）。
   - 购销终审函数全部带仓（单据 warehouse_id 可空=默认仓 WH01，函数内 COALESCE 兜底）：`po_execute_receipt`/`po_execute_return`/`po_reverse_receipt`/`po_fulfill_order`/`so_execute_shipment`/`so_execute_return`/`so_fulfill_order`。
 - **审批**：复用通用引擎 `src/server/approval/engine.ts`，doc_type 扩展 `transfer`/`check`（规则种子：一级 manager）；终审 RPC 失败自动回滚步骤 pending。权限点 `inv.write`（建单/收货/冻结）、`inv.approve`（审批），均 admin+manager；staff 只读 `inv.read`。
@@ -387,6 +390,16 @@
   - **冒烟**：`scripts/integrity-backup-smoke.py`（工作区内，/tmp 易清理）57 项——staff403/匿名401、七断言全 pass、历史/过滤、手工凭证接口强制平衡 400（造错入口已由接口同源约束拦截）、已结账期间重复结账 400、备份 full/partial/缺 scope400/未知分组400、历史/详情/导出快照行数一致/含恢复指引、审计留痕、页面 200、既有模块回归；golden 第 21 节 27 用例（共 187 passed）。
   - **历史数据修复**：批次体系前遗留库存（首批台账 balance=101 但批次合计=2 类）已通过一次性 SQL 补录 `LEGACY-INIT` 批次（36 行，initial=remaining=缺口量，unit_cost=当时 avg_cost），使 batch_closure 断言对真实数据通过。
 
+- **色号全链路贯通**（迁移 `0022_color_schema.sql`，`src/server/master-data/colors.ts`，0022）：
+  - **设计核心**：`color_code varchar(32) NOT NULL DEFAULT ''`（`''`=默认色/未分色，存量数据零迁移兼容）；`color_name` 为单据行快照。色号档案 `md_product_colors`（UNIQUE(product_id, color_code)、status active/disabled、RLS；停用不影响历史单据）。
+  - **库存最小管理单元 = sku_code + color_code + batch_no + 仓库**：`inv_stock` 唯一约束升级为 `(warehouse_id, product_id, color_code)`；`inv_batches` 唯一约束升级为 `(product_id, warehouse_id, batch_no, color_code)`；`inv_stock_ledger`/`inv_transfer_items`/`inv_check_items`/购销全部 `_items` 明细表（po/so 各 3 张 + ma_manufacturing_items）均加 color_code(+color_name 快照)。
+  - **plpgsql 色号化重写**（0022 内 DROP 双签名 + CREATE，末位 `p_color_code DEFAULT ''` 兼容旧调用）：inv_apply_receipt_in（仓×色号移动加权+批次 upsert）/inv_apply_issue_out（FIFO 仅扣同色号批次）/inv_adjust_frozen/po_execute_receipt/po_execute_return/po_reverse_receipt（红蓝冲回按原行色号）/po_fulfill_order/so_execute_shipment（数量强校验+成本结转均按 商品×色号 分组，写明细 cost 与单头 total_cost）/so_execute_return/so_fulfill_order/inv_execute_transfer/inv_receive_transfer/inv_execute_check/mo_execute_issue/mo_execute_finish。
+  - **服务端校验**：`colors.ts#resolveItemColors(items)` 单据落库前统一校验——空色号放行（默认色），非空必须档案存在且 active（否则 400 `MD.COLOR_INVALID`）；同单据 型号+色号 重复行前后端双重拦截（400）。采购申请转订单、出入库单创建均随行带色号。
+  - **断言纳入色号**：`integrity-math.ts` 分组键 `unitKey=product|warehouse|color`（'' 兼容存量），batch_closure/ledger_conservation 按 商品×仓×色号 分组；`integrity.ts` 取数带 color_code，断言名称标注「按商品×仓×色号」。
+  - **前端**：商品列表页 Palette 按钮 → `product-colors-dialog.tsx`（色号新增/启停/删除/库存关联量）；采购共用编辑器 `purchase/doc-item-editor.tsx` 与购销订单编辑器 `trade/order-editor.tsx` 均带色号 Select（按行商品过滤、换商品重置色号防串色、`__default__`=默认色占位）；库存 stock/batches/movements/alerts 列表加色号列+`?color_code=` 筛选；调拨新建页色号选择；盘点快照按色号分行；购销/出入库/退货详情页明细表加色号列。
+  - **迁移要点**：is_estimated 为 boolean（勿写 0/1）、po_receipts 必需 supplier_id+approved_by、so_shipments 必需 customer_id+warehouse_id+total_cost（列名 ship_date）、so_shipment_items 成本列名 `cost`、inv_transfers 无 received_by 列。
+  - **验证**：`scripts/color-chain-smoke.py` 54 项全过（色号 CRUD/409/有库存禁删、采购带色号入库红/灰分列均价 10/20 不串、销售带色号出库只扣红不动灰、台账/批次含色号、存量 '' 默认色兼容、staff403/匿名401、七页 200、三断言 pass）；golden 第 22 节 8 用例（共 195 passed）；既有冒烟 57/57 回归无破坏。
+
 
 - **成本结转两套模板（迁移 0013，幂等种子）**：`MANUFACTURE_FINISH`（event=manufacture_finish，借 1405 库存商品 `#amount` / 贷 5101 生产成本—加工归集 `#amount`）与 `SALES_SHIPMENT_COST`（event=sales_cof_shipment，借 6401 主营业务成本 `#amount` / 贷 1405 库存商品 `#amount`）；均 `balance_to=6601 管理费用`。`src/server/ledger/events.ts` 新增 `onSalesShipmentCost` / `onManufactureFinish`（按 (event_type,event_id) 幂等）。
 - **接入点**：`sales/shipments.ts#approveShipment` 与 `sales/orders.ts#completeOrder`（一键发货）终审出库后生成销售成本凭证（cost=单头 `total_cost`）；`processing.ts#finishManufacturing` 在加工单 →completed 后生成加工完工成本凭证（cost=`issued_cost` 投入成本，差额按损耗处理）。
@@ -488,7 +501,7 @@ src/
 │   └── finance/                 # 财务通用：欠款汇总列表(kind 区分应收应付) / 收付款登记对话框 / 凭证/税务页面组件
 ├── lib/                     # api-client / types / use-paged-list(支持 filters)
 └── storage/database/        # supabase-client.ts + shared/schema.ts
-db/migrations/               # 版本化 SQL（0001 基础+认证 / 0002 采购 / 0003 销售 / 0004 库存 / 0005 财务 / 0006 采购 V2 五单+审批+成本+冲回 / 0007 销售 V2 出库+退货+等级报价 / 0008 库存 V2 多仓+批次+调拨+盘点+预警 / 0009 周边：系统字典 dict_* + 计量单位 md_units / 0010 财务 V2 应收应付核销 / 0011 财务凭证引擎+税务 / 0012 加工 ma_* / 0013 成本结转凭证 / 0014 PDA 移动端零迁移 / 0015 会计科目 fin_subjects/凭证手工记账 / 0016 期末结账：fin_accounting_periods 期间状态表(open/closed/annual_closed+locked+结转损益凭证号+结账/反结账留痕) + fin_period_logs 留痕日志表(仅INSERT) + 本年利润4103/未分配利润4104/所得税费用6402/税金及附加6403 种子 / 0017 费用报销 fin_expense_claims(+items)+ 银行对账单 fin_bank_statements + 其他应付款2241 种子 + expense 审批规则 / 0018 固定资产 fin_fixed_assets + 折旧记录 fin_depreciation_records(UNIQUE(asset_id,period)) + 6301/6711 种子 + fin_vouchers.event_id 扩宽 36→64 / 0019 税务增强：tax_invoices 发票台账(UNIQUE(direction,invoice_no)) + tax_prepaid 异地预缴 + tax_soc_diff 税会差异 / 0020 系统管理：sys_roles + sys_role_permissions + sys_user_roles + sys_settings + sys_audit_logs(只追加触发器) + sys_users.dept）
+db/migrations/               # 版本化 SQL（0001 基础+认证 / 0002 采购 / 0003 销售 / 0004 库存 / 0005 财务 / 0006 采购 V2 五单+审批+成本+冲回 / 0007 销售 V2 出库+退货+等级报价 / 0008 库存 V2 多仓+批次+调拨+盘点+预警 / 0009 周边：系统字典 dict_* + 计量单位 md_units / 0010 财务 V2 应收应付核销 / 0011 财务凭证引擎+税务 / 0012 加工 ma_* / 0013 成本结转凭证 / 0014 PDA 移动端零迁移 / 0015 会计科目 fin_subjects/凭证手工记账 / 0016 期末结账：fin_accounting_periods 期间状态表(open/closed/annual_closed+locked+结转损益凭证号+结账/反结账留痕) + fin_period_logs 留痕日志表(仅INSERT) + 本年利润4103/未分配利润4104/所得税费用6402/税金及附加6403 种子 / 0017 费用报销 fin_expense_claims(+items)+ 银行对账单 fin_bank_statements + 其他应付款2241 种子 + expense 审批规则 / 0018 固定资产 fin_fixed_assets + 折旧记录 fin_depreciation_records(UNIQUE(asset_id,period)) + 6301/6711 种子 + fin_vouchers.event_id 扩宽 36→64 / 0019 税务增强：tax_invoices 发票台账(UNIQUE(direction,invoice_no)) + tax_prepaid 异地预缴 + tax_soc_diff 税会差异 / 0020 系统管理：sys_roles + sys_role_permissions + sys_user_roles + sys_settings + sys_audit_logs(只追加触发器) + sys_users.dept / 0021 数据一致性断言 sys_integrity_checks + 系统备份 sys_backups / 0022 色号全链路：md_product_colors 色号档案 + 14 表 color_code/color_name + inv_stock/inv_batches 唯一约束含色号 + 15 个 plpgsql 函数色号化重写）
 scripts/seed-dev.ts          # DEV 测试账号种子
 ```
 
@@ -498,6 +511,7 @@ scripts/seed-dev.ts          # DEV 测试账号种子
 - curl 直接发**未百分号编码的非 ASCII query**（如 `?keyword=冒烟`）会被 Node HTTP 层以 400 空响应拒绝（非业务错误）；冒烟用 ASCII 关键字（如单号），中文模糊搜索由浏览器自动编码，不影响前端使用。
 - 超长、含多层嵌套引号的 shell 在 test_run 中转义易被破坏；复杂全链路（登录→建资料→建单→确认→出入库→断言）用自包含 Python 脚本（`urllib` + `http.cookiejar.CookieJar`，TS 后缀避免单号/编码冲突）驱动，打印 `XXX_SMOKE_OK` 收口。
 - completed 单据不可删除且外键引用客户/供应商/商品，库存流水只追加，故冒烟产生的主数据与库存数据保留在 DEV 库（业务断言通过即可），不要在脚本末尾强删。
+- 既有冒烟脚本清单：`scripts/integrity-backup-smoke.py`（57 项，0021）、`scripts/color-chain-smoke.py`（54 项，0022 色号全链路：色号档案 CRUD/采购带色号入库分列/销售带色号出库不串色/存量 '' 兼容/权限/页面/断言）；golden 195 条（`pnpm tsx scripts/ledger-golden.ts`）。
 
 ## 包管理规范
 

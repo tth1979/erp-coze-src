@@ -14,6 +14,7 @@ import { nextDocNo } from '@/server/doc-no';
 import { ApiError } from '@/server/http';
 import { emptyToNull, escapeOrKeyword, throwDbError, type ListQuery, type PagedResult } from '@/server/master-data/helpers';
 import { getSupabaseClient } from '@/storage/database/supabase-client';
+import { normalizeColorCode } from '@/server/master-data/colors';
 import { onSalesShipment, onSalesShipmentCost, fetchCustomerName } from '@/server/ledger/events';
 import type { SoShipment, SoShipmentItem, SysUser } from '@/storage/database/shared/schema';
 
@@ -27,6 +28,8 @@ export interface ShipmentItemView {
   amount: number;
   cost: number | null;
   unit: string | null;
+  color_code: string | null;
+  color_name: string | null;
 }
 
 export interface ShipmentView {
@@ -59,6 +62,8 @@ const uuid = z.string().regex(/^[0-9a-fA-F-]{36}$/, 'ID 格式不正确');
 const itemSchema = z.object({
   product_id: uuid,
   quantity: z.number().positive('数量必须大于 0').max(9_999_999, '数量超出范围'),
+  /** 色号编码（库存最小管理单元维度）；''/省略=默认色，须与订单行色号一致 */
+  color_code: z.string().trim().max(32, '色号编码过长').optional(),
 });
 
 export const shipmentCreateSchema = z.object({
@@ -217,6 +222,8 @@ export async function getShipment(id: string): Promise<ShipmentView> {
     amount: toNumber(item.amount),
     cost: item.cost === null ? null : toNumber(item.cost),
     unit: item.unit,
+    color_code: item.color_code ?? null,
+    color_name: item.color_name ?? null,
   }));
 
   return serialize(row, {
@@ -255,14 +262,19 @@ export async function createShipment(input: ShipmentCreateInput, user: SysUser):
     .from('so_sales_order_items')
     .select('*')
     .eq('order_id', input.order_id);
+  // 订单行按 商品+色号 建索引（色号不串）
   const orderItemMap = new Map(
-    ((orderItems ?? []) as Array<Record<string, unknown>>).map((i) => [i.product_id as string, i]),
+    ((orderItems ?? []) as Array<Record<string, unknown>>).map((i) => [
+      `${i.product_id as string}|${(i.color_code as string) ?? ''}`,
+      i,
+    ]),
   );
 
   let total = 0;
   const items = input.items.map((item) => {
-    const src = orderItemMap.get(item.product_id);
-    if (!src) throw new ApiError(400, 'SO.ITEM_NOT_IN_ORDER', '出库明细含订单外商品');
+    const colorCode = normalizeColorCode(item.color_code);
+    const src = orderItemMap.get(`${item.product_id}|${colorCode}`);
+    if (!src) throw new ApiError(400, 'SO.ITEM_NOT_IN_ORDER', '出库明细含订单外商品或色号');
     const unitPrice = toNumber(src.unit_price as string);
     const amount = Math.round(item.quantity * unitPrice * 100) / 100;
     total = Math.round((total + amount) * 100) / 100;
@@ -272,6 +284,8 @@ export async function createShipment(input: ShipmentCreateInput, user: SysUser):
       unit_price: unitPrice,
       amount,
       unit: (src.unit as string | null) ?? null,
+      color_code: colorCode,
+      color_name: (src.color_name as string | null) ?? null,
     };
   });
 

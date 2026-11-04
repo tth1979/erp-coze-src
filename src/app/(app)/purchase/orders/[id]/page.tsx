@@ -225,6 +225,7 @@ export default function PurchaseOrderDetailPage() {
                   <p className="mt-0.5 font-mono text-xs text-stone-500">
                     {item.product_sku ?? ''}
                     {item.product_spec ? ` · ${item.product_spec}` : ''}
+                    {item.color_code ? ` · ${item.color_name ?? item.color_code}` : ''}
                   </p>
                 </div>
                 <span className="shrink-0 text-sm font-bold tabular-nums text-stone-900">
@@ -276,7 +277,10 @@ export default function PurchaseOrderDetailPage() {
                   <TableCell className="text-stone-500">{index + 1}</TableCell>
                   <TableCell>
                     <div className="text-sm text-stone-800">{item.product_name ?? '商品已删除'}</div>
-                    <div className="font-mono text-xs text-stone-500">{item.product_sku ?? ''}</div>
+                    <div className="font-mono text-xs text-stone-500">
+                      {item.product_sku ?? ''}
+                      {item.color_code ? ` · ${item.color_name ?? item.color_code}` : ''}
+                    </div>
                   </TableCell>
                   <TableCell className="text-stone-600">{item.product_spec ?? '—'}</TableCell>
                   <TableCell className="text-right tabular-nums">

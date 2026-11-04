@@ -659,6 +659,77 @@ console.log('\n— 系统管理 —');
   assert('备份-未知分组识别', scopeBad.invalid.length === 1);
 }
 
+// ---------------------------------------------------------------------------
+// 22) 色号维度（0022）：库存最小单元 = 商品×仓×色号，断言按色号独立核算
+// ---------------------------------------------------------------------------
+console.log('\n— 色号维度断言（商品×仓×色号） —');
+{
+  // 批次结存：同商品同仓不同色号独立闭合（色号不串）
+  const colorStocks = [
+    { product_id: 'P1', warehouse_id: 'WH01', color_code: '', quantity: 40, frozen_quantity: 0, in_transit: 0 },
+    { product_id: 'P1', warehouse_id: 'WH01', color_code: 'C01', quantity: 60, frozen_quantity: 0, in_transit: 0 },
+  ];
+  const colorBatchPass = evalBatchClosure(colorStocks, [
+    { product_id: 'P1', warehouse_id: 'WH01', color_code: '', remaining_quantity: 40, unit_cost: 10 },
+    { product_id: 'P1', warehouse_id: 'WH01', color_code: 'C01', remaining_quantity: 25, unit_cost: 11 },
+    { product_id: 'P1', warehouse_id: 'WH01', color_code: 'C01', remaining_quantity: 35, unit_cost: 12 },
+  ]);
+  assert('色号批次-同商品不同色号独立闭合 pass', colorBatchPass.result === 'pass');
+  // 色号混放（C01 批次计入默认色库存）→ 不闭合 fail
+  const colorBatchMixed = evalBatchClosure(colorStocks, [
+    { product_id: 'P1', warehouse_id: 'WH01', color_code: '', remaining_quantity: 100, unit_cost: 10 },
+  ]);
+  assert('色号批次-跨色号混算 fail', colorBatchMixed.result === 'fail' && colorBatchMixed.failureType === 'BATCH_CLOSURE_MISMATCH');
+  // 孤儿色号批次（批次色号无对应库存行）→ fail
+  const colorBatchOrphan = evalBatchClosure(colorStocks, [
+    { product_id: 'P1', warehouse_id: 'WH01', color_code: '', remaining_quantity: 40, unit_cost: 10 },
+    { product_id: 'P1', warehouse_id: 'WH01', color_code: 'C01', remaining_quantity: 60, unit_cost: 11 },
+    { product_id: 'P1', warehouse_id: 'WH01', color_code: 'C99', remaining_quantity: 5, unit_cost: 9 },
+  ]);
+  assert('色号批次-孤儿色号批次 fail', colorBatchOrphan.result === 'fail');
+
+  // 台账守恒：同商品同仓不同色号各自成链，互不串色
+  const colorLedgerPass = evalLedgerConservation([
+    { id: '1', product_id: 'P1', warehouse_id: 'WH01', color_code: 'C01', quantity: 60, balance: 60, ref_no: 'GR-1', created_at: '2026-01-01T00:00:00Z' },
+    { id: '2', product_id: 'P1', warehouse_id: 'WH01', color_code: '', quantity: 40, balance: 40, ref_no: 'GR-2', created_at: '2026-01-01T01:00:00Z' },
+    { id: '3', product_id: 'P1', warehouse_id: 'WH01', color_code: 'C01', quantity: -20, balance: 40, ref_no: 'SH-1', created_at: '2026-01-02T00:00:00Z' },
+  ], [
+    { product_id: 'P1', warehouse_id: 'WH01', color_code: 'C01', quantity: 40, frozen_quantity: 0, in_transit: 0 },
+    { product_id: 'P1', warehouse_id: 'WH01', color_code: '', quantity: 40, frozen_quantity: 0, in_transit: 0 },
+  ]);
+  assert('色号台账-分色成链 pass', colorLedgerPass.result === 'pass');
+  // 色号出库扣错链（C01 出库记到默认色链上）→ 断链 fail
+  const colorLedgerCross = evalLedgerConservation([
+    { id: '1', product_id: 'P1', warehouse_id: 'WH01', color_code: 'C01', quantity: 60, balance: 60, ref_no: 'GR-1', created_at: '2026-01-01T00:00:00Z' },
+    { id: '2', product_id: 'P1', warehouse_id: 'WH01', color_code: '', quantity: 40, balance: 40, ref_no: 'GR-2', created_at: '2026-01-01T01:00:00Z' },
+    { id: '3', product_id: 'P1', warehouse_id: 'WH01', color_code: '', quantity: -20, balance: 20, ref_no: 'SH-1', created_at: '2026-01-02T00:00:00Z' },
+  ], [
+    { product_id: 'P1', warehouse_id: 'WH01', color_code: 'C01', quantity: 40, frozen_quantity: 0, in_transit: 0 },
+    { product_id: 'P1', warehouse_id: 'WH01', color_code: '', quantity: 40, frozen_quantity: 0, in_transit: 0 },
+  ]);
+  assert('色号台账-色号链末与库存不符 fail', colorLedgerCross.result === 'fail');
+
+  // 色号缺省（undefined）与 '' 同组：存量数据兼容
+  const legacyStocks = [
+    { product_id: 'P1', warehouse_id: 'WH01', quantity: 30, frozen_quantity: 0, in_transit: 0 },
+  ];
+  const legacyBatchPass = evalBatchClosure(legacyStocks, [
+    { product_id: 'P1', warehouse_id: 'WH01', color_code: '', remaining_quantity: 30, unit_cost: 10 },
+  ]);
+  assert('色号兼容-缺省色号与空串同组 pass', legacyBatchPass.result === 'pass');
+
+  // 数量四态：色号行独立校验（冻结不超现有，按行判定）
+  const colorQtyPass = evalQuantityState([
+    { product_id: 'P1', warehouse_id: 'WH01', color_code: 'C01', quantity: 50, frozen_quantity: 10, in_transit: 0 },
+    { product_id: 'P1', warehouse_id: 'WH01', color_code: '', quantity: 30, frozen_quantity: 0, in_transit: 0 },
+  ]);
+  assert('色号四态-分行校验 pass', colorQtyPass.result === 'pass');
+  const colorQtyFail = evalQuantityState([
+    { product_id: 'P1', warehouse_id: 'WH01', color_code: 'C01', quantity: 5, frozen_quantity: 8, in_transit: 0 },
+  ]);
+  assert('色号四态-单色号锁定超现有 fail', colorQtyFail.result === 'fail' && colorQtyFail.failureType === 'QTY_STATE_MISMATCH');
+}
+
 console.log(`\n${passed} passed, ${failures} failed`);
 if (failures > 0) process.exit(1);
 console.log('LEDGER_GOLDEN_OK');

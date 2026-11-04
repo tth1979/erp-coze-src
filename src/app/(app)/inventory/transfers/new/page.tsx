@@ -22,13 +22,22 @@ import { Textarea } from '@/components/ui/textarea';
 interface TransferItemRow {
   key: string;
   productId: string;
+  colorCode: string;
   quantity: string;
+}
+
+/** 色号选项（/api/md/colors 返回项） */
+interface ColorOption {
+  product_id: string;
+  color_code: string;
+  color_name: string;
+  status: string;
 }
 
 let rowKey = 0;
 function newRow(): TransferItemRow {
   rowKey += 1;
-  return { key: `row-${rowKey}`, productId: '', quantity: '' };
+  return { key: `row-${rowKey}`, productId: '', colorCode: '', quantity: '' };
 }
 
 /** 新建库存调拨单：调出仓 ≠ 调入仓，明细只需商品+数量（成本按调出时移动均价快照） */
@@ -39,12 +48,27 @@ export default function NewTransferPage() {
   const [toWarehouseId, setToWarehouseId] = useState('');
   const [remark, setRemark] = useState('');
   const [items, setItems] = useState<TransferItemRow[]>([newRow()]);
+  const [colorsMap, setColorsMap] = useState<Map<string, ColorOption[]>>(new Map());
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     apiFetch<{ items: Product[] }>('/api/md/products?page=1&pageSize=100')
       .then((res) => setProducts(res.items))
       .catch(() => toast.error('商品列表加载失败'));
+    apiFetch<{ items: ColorOption[] }>('/api/md/colors')
+      .then((res) => {
+        const map = new Map<string, ColorOption[]>();
+        for (const color of res.items) {
+          if (color.status !== 'active') continue;
+          const arr = map.get(color.product_id) ?? [];
+          arr.push(color);
+          map.set(color.product_id, arr);
+        }
+        setColorsMap(map);
+      })
+      .catch(() => {
+        /* 色号档案加载失败不阻塞建单，默认色号 */
+      });
   }, []);
 
   function updateItem(key: string, patch: Partial<TransferItemRow>) {
@@ -64,14 +88,18 @@ export default function NewTransferPage() {
       toast.error('调出仓与调入仓不能相同');
       return;
     }
-    const built: Array<{ product_id: string; quantity: number }> = [];
+    const built: Array<{ product_id: string; color_code?: string; quantity: number }> = [];
     for (const item of items) {
       const qty = Number(item.quantity);
       if (!item.productId || !Number.isFinite(qty) || qty <= 0) {
         toast.error('请完善明细行：选择商品并填写有效数量');
         return;
       }
-      built.push({ product_id: item.productId, quantity: qty });
+      built.push({
+        product_id: item.productId,
+        color_code: item.colorCode || undefined,
+        quantity: qty,
+      });
     }
     if (built.length === 0) {
       toast.error('请至少填写一行明细');
@@ -149,13 +177,13 @@ export default function NewTransferPage() {
             {items.map((item, index) => (
               <div
                 key={item.key}
-                className="grid grid-cols-[1fr_110px_36px] items-end gap-2 rounded-md border border-stone-200 p-3 md:border-0 md:p-0"
+                className="grid grid-cols-[1fr_150px_110px_36px] items-end gap-2 rounded-md border border-stone-200 p-3 md:border-0 md:p-0"
               >
                 <div className="space-y-1">
                   <Label className="text-xs text-stone-500">商品 {index + 1}</Label>
                   <Select
                     value={item.productId || undefined}
-                    onValueChange={(value) => updateItem(item.key, { productId: value })}
+                    onValueChange={(value) => updateItem(item.key, { productId: value, colorCode: '' })}
                   >
                     <SelectTrigger className="w-full">
                       <SelectValue placeholder="选择商品" />
@@ -165,6 +193,28 @@ export default function NewTransferPage() {
                         <SelectItem key={product.id} value={product.id}>
                           {product.sku_code} · {product.name}
                           {product.spec ? ` · ${product.spec}` : ''}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs text-stone-500">色号</Label>
+                  <Select
+                    value={item.colorCode || '__default__'}
+                    onValueChange={(value) =>
+                      updateItem(item.key, { colorCode: value === '__default__' ? '' : value })
+                    }
+                    disabled={!item.productId}
+                  >
+                    <SelectTrigger className="w-full">
+                      <SelectValue placeholder="默认色" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__default__">默认色</SelectItem>
+                      {(colorsMap.get(item.productId) ?? []).map((color) => (
+                        <SelectItem key={color.color_code} value={color.color_code}>
+                          {color.color_name}（{color.color_code}）
                         </SelectItem>
                       ))}
                     </SelectContent>

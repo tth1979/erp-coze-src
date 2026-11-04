@@ -32,6 +32,8 @@ export interface CheckItemView {
   difference: number;
   /** 过账成本快照（过账前为 null） */
   unit_cost: number | null;
+  color_code: string | null;
+  color_name: string | null;
 }
 
 export interface CheckView {
@@ -259,6 +261,8 @@ export async function getCheck(id: string): Promise<CheckView> {
       counted_quantity: counted,
       difference: posted ? toNumber(it.difference) : counted - book,
       unit_cost: it.unit_cost === null ? null : toNumber(it.unit_cost),
+      color_code: (it as InvCheckItem).color_code ?? null,
+      color_name: (it as InvCheckItem).color_name ?? null,
     };
   });
 
@@ -295,13 +299,13 @@ export async function createCheck(input: unknown, user: SysUser): Promise<CheckV
     throw new ApiError(400, 'INV.WAREHOUSE_INVALID', '仓库不存在或已停用');
   }
 
-  // 账面快照（含零库存行也纳入，方便盘盈新增批次外的商品行？——仅纳管已有库存行）
+  // 账面快照（按 商品×色号 维度；含零库存行也纳入）
   const { data: stockRows, error: sErr } = await supabase
     .from('inv_stock')
-    .select('product_id, quantity')
+    .select('product_id, color_code, quantity')
     .eq('warehouse_id', parsed.data.warehouse_id);
   if (sErr) throwDbError(sErr, '快照账面库存');
-  const snapshot = (stockRows ?? []) as Array<{ product_id: string; quantity: string | number }>;
+  const snapshot = (stockRows ?? []) as Array<{ product_id: string; color_code: string | null; quantity: string | number }>;
 
   const checkNo = await nextDocNo('IC', 'inv_checks', 'check_no');
   const { data, error } = await supabase
@@ -328,14 +332,28 @@ export async function createCheck(input: unknown, user: SysUser): Promise<CheckV
     for (const p of (prodRows ?? []) as Array<{ id: string; unit: string | null }>) {
       unitMap.set(p.id, p.unit);
     }
+    // 色号名称快照
+    const { data: colorRows } = await supabase
+      .from('md_product_colors')
+      .select('product_id, color_code, color_name')
+      .in('product_id', productIds);
+    const colorNameMap = new Map<string, string>();
+    for (const c of colorRows ?? []) {
+      colorNameMap.set(`${c.product_id as string}|${c.color_code as string}`, c.color_name as string);
+    }
     const { error: iErr } = await supabase.from('inv_check_items').insert(
-      snapshot.map((s) => ({
-        check_id: row.id,
-        product_id: s.product_id,
-        book_quantity: Number(s.quantity),
-        counted_quantity: Number(s.quantity),
-        unit: unitMap.get(s.product_id) ?? null,
-      })),
+      snapshot.map((s) => {
+        const colorCode = (s.color_code ?? '').trim();
+        return {
+          check_id: row.id,
+          product_id: s.product_id,
+          book_quantity: Number(s.quantity),
+          counted_quantity: Number(s.quantity),
+          unit: unitMap.get(s.product_id) ?? null,
+          color_code: colorCode,
+          color_name: colorCode ? (colorNameMap.get(`${s.product_id}|${colorCode}`) ?? null) : null,
+        };
+      }),
     );
     if (iErr) throwDbError(iErr, '写入盘点明细');
   }

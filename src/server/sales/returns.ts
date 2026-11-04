@@ -12,6 +12,7 @@ import { approveCurrentStep, listSteps, rejectCurrentStep, submitDocument, type 
 import { nextDocNo } from '@/server/doc-no';
 import { ApiError } from '@/server/http';
 import { emptyToNull, escapeOrKeyword, throwDbError, type ListQuery, type PagedResult } from '@/server/master-data/helpers';
+import { normalizeColorCode } from '@/server/master-data/colors';
 import { getSupabaseClient } from '@/storage/database/supabase-client';
 import type { SoReturn, SoReturnItem, SysUser } from '@/storage/database/shared/schema';
 
@@ -25,6 +26,8 @@ export interface ReturnItemView {
   amount: number;
   unit_cost: number | null;
   unit: string | null;
+  color_code: string | null;
+  color_name: string | null;
 }
 
 export interface ReturnView {
@@ -59,6 +62,8 @@ const uuid = z.string().regex(/^[0-9a-fA-F-]{36}$/, 'ID 格式不正确');
 const itemSchema = z.object({
   product_id: uuid,
   quantity: z.number().positive('数量必须大于 0').max(9_999_999, '数量超出范围'),
+  /** 色号编码（库存最小管理单元维度）；''/省略=默认色，须与订单行色号一致 */
+  color_code: z.string().max(32, '色号编码不能超过 32 字').optional(),
 });
 
 export const returnCreateSchema = z.object({
@@ -235,6 +240,8 @@ export async function getReturn(id: string): Promise<ReturnView> {
     amount: toNumber(item.amount),
     unit_cost: item.unit_cost === null ? null : toNumber(item.unit_cost),
     unit: item.unit,
+    color_code: item.color_code ?? null,
+    color_name: item.color_name ?? null,
   }));
 
   return serialize(row, {
@@ -273,8 +280,12 @@ export async function createReturn(input: ReturnCreateInput, user: SysUser): Pro
     .from('so_sales_order_items')
     .select('*')
     .eq('order_id', input.order_id);
+  // 订单行按 商品+色号 建索引（色号不串）
   const orderItemMap = new Map(
-    ((orderItems ?? []) as Array<Record<string, unknown>>).map((i) => [i.product_id as string, i]),
+    ((orderItems ?? []) as Array<Record<string, unknown>>).map((i) => [
+      `${i.product_id as string}|${(i.color_code as string) ?? ''}`,
+      i,
+    ]),
   );
 
   // 退回仓：入参 > 订单仓 > 默认仓 WH01
@@ -288,25 +299,26 @@ export async function createReturn(input: ReturnCreateInput, user: SysUser): Pro
     warehouseId = (wh?.id as string | undefined) ?? null;
   }
 
-  // 当前移动加权均价快照（红字冲销口径，按退回仓取）
+  // 当前移动加权均价快照（红字冲销口径，按退回仓+色号取）
   const productIds = [...new Set(input.items.map((i) => i.product_id))];
   let stockReq = supabase
     .from('inv_stock')
-    .select('product_id, avg_cost')
+    .select('product_id, color_code, avg_cost')
     .in('product_id', productIds);
   if (warehouseId) stockReq = stockReq.eq('warehouse_id', warehouseId);
   const { data: stockRows } = await stockReq;
   const avgMap = new Map(
     ((stockRows ?? []) as Array<Record<string, unknown>>).map((s) => [
-      s.product_id as string,
+      `${s.product_id as string}|${(s.color_code as string) ?? ''}`,
       toNumber(s.avg_cost as string),
     ]),
   );
 
   let total = 0;
   const items = input.items.map((item) => {
-    const src = orderItemMap.get(item.product_id);
-    if (!src) throw new ApiError(400, 'SO.ITEM_NOT_IN_ORDER', '退货明细含订单外商品');
+    const colorCode = normalizeColorCode(item.color_code);
+    const src = orderItemMap.get(`${item.product_id}|${colorCode}`);
+    if (!src) throw new ApiError(400, 'SO.ITEM_NOT_IN_ORDER', '退货明细含订单外商品或色号');
     const unitPrice = toNumber(src.unit_price as string);
     const amount = Math.round(item.quantity * unitPrice * 100) / 100;
     total = Math.round((total + amount) * 100) / 100;
@@ -315,8 +327,10 @@ export async function createReturn(input: ReturnCreateInput, user: SysUser): Pro
       quantity: item.quantity,
       unit_price: unitPrice,
       amount,
-      unit_cost: avgMap.get(item.product_id) ?? 0,
+      unit_cost: avgMap.get(`${item.product_id}|${colorCode}`) ?? 0,
       unit: (src.unit as string | null) ?? null,
+      color_code: colorCode,
+      color_name: (src.color_name as string | null) ?? null,
     };
   });
 

@@ -13,7 +13,10 @@ export interface AlertRow {
   spec: string | null;
   unit: string | null;
   safety_stock: string;
-  /** 跨仓合计现有量 */
+  /** 色号编码（'' = 默认色/未分色）；预警按 商品×色号 维度合计 */
+  color_code: string;
+  color_name: string | null;
+  /** 跨仓合计现有量（该色号） */
   total_quantity: string;
   /** 缺口 = safety_stock − total_quantity */
   shortage: string;
@@ -47,20 +50,45 @@ export async function listAlerts(query: ListQuery): Promise<PagedResult<AlertRow
   const ids = list.map((p) => p.id);
   const { data: stockRows, error: sErr } = await supabase
     .from('inv_stock')
-    .select('product_id, quantity')
+    .select('product_id, color_code, quantity')
     .in('product_id', ids);
   if (sErr) throwDbError(sErr, '汇总库存');
 
+  // 按 商品×色号 聚合（色号维度账实一致）
   const totals = new Map<string, number>();
   for (const row of stockRows ?? []) {
-    const pid = row.product_id as string;
-    totals.set(pid, (totals.get(pid) ?? 0) + Number(row.quantity ?? 0));
+    const key = `${row.product_id as string}|${(row.color_code as string) ?? ''}`;
+    totals.set(key, (totals.get(key) ?? 0) + Number(row.quantity ?? 0));
+  }
+  // 色号名称补全
+  const { data: colorRows } = await supabase
+    .from('md_product_colors')
+    .select('product_id, color_code, color_name')
+    .in('product_id', ids);
+  const colorNames = new Map<string, string>();
+  for (const c of colorRows ?? []) {
+    colorNames.set(`${c.product_id as string}|${c.color_code as string}`, c.color_name as string);
+  }
+
+  // 每个商品展开为 商品×色号 行（无库存行时以 '' 色号 0 量兜底，保证断货也能预警）
+  const expanded: Array<{ p: (typeof list)[number]; colorCode: string; total: number }> = [];
+  for (const p of list) {
+    const colorCodes = new Set<string>();
+    for (const key of totals.keys()) {
+      if (key.startsWith(`${p.id}|`)) colorCodes.add(key.slice(p.id.length + 1));
+    }
+    if (colorCodes.size === 0) {
+      expanded.push({ p, colorCode: '', total: 0 });
+    } else {
+      for (const code of colorCodes) {
+        expanded.push({ p, colorCode: code, total: totals.get(`${p.id}|${code}`) ?? 0 });
+      }
+    }
   }
 
   // 合计现有量 ≤ 阈值 → 命中预警；缺货严重度（缺口）倒序
-  const alerts: AlertRow[] = list
-    .map((p) => {
-      const total = totals.get(p.id) ?? 0;
+  const alerts: AlertRow[] = expanded
+    .map(({ p, colorCode, total }) => {
       const safety = Number(p.safety_stock);
       return {
         product_id: p.id,
@@ -69,6 +97,8 @@ export async function listAlerts(query: ListQuery): Promise<PagedResult<AlertRow
         spec: p.spec,
         unit: p.unit,
         safety_stock: String(p.safety_stock),
+        color_code: colorCode,
+        color_name: colorCode ? (colorNames.get(`${p.id}|${colorCode}`) ?? null) : null,
         total_quantity: String(total),
         shortage: String(safety - total),
       };

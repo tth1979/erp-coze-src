@@ -42,11 +42,12 @@ async function fetchStocks(): Promise<StockValueRow[]> {
   const supabase = getSupabaseClient();
   const { data, error } = await supabase
     .from('inv_stock')
-    .select('product_id,warehouse_id,quantity,frozen_quantity,in_transit,avg_cost,total_cost');
+    .select('product_id,warehouse_id,color_code,quantity,frozen_quantity,in_transit,avg_cost,total_cost');
   if (error) throw new ApiError(500, 'SYS.DB', error.message);
   return (data ?? []).map((r: Record<string, unknown>) => ({
     product_id: String(r.product_id),
     warehouse_id: String(r.warehouse_id ?? ''),
+    color_code: String(r.color_code ?? ''),
     quantity: toNum(r.quantity),
     frozen_quantity: toNum(r.frozen_quantity),
     in_transit: toNum(r.in_transit),
@@ -59,11 +60,12 @@ async function fetchBatches(): Promise<BatchRow[]> {
   const supabase = getSupabaseClient();
   const { data, error } = await supabase
     .from('inv_batches')
-    .select('product_id,warehouse_id,remaining_quantity,unit_cost');
+    .select('product_id,warehouse_id,color_code,remaining_quantity,unit_cost');
   if (error) throw new ApiError(500, 'SYS.DB', error.message);
   return (data ?? []).map((r: Record<string, unknown>) => ({
     product_id: String(r.product_id),
     warehouse_id: String(r.warehouse_id ?? ''),
+    color_code: String(r.color_code ?? ''),
     remaining_quantity: toNum(r.remaining_quantity),
     unit_cost: toNum(r.unit_cost),
   }));
@@ -73,7 +75,7 @@ async function fetchLedger(): Promise<LedgerRow[]> {
   const supabase = getSupabaseClient();
   const { data, error } = await supabase
     .from('inv_stock_ledger')
-    .select('id,product_id,warehouse_id,quantity,balance,ref_no,created_at')
+    .select('id,product_id,warehouse_id,color_code,quantity,balance,ref_no,created_at')
     .order('created_at', { ascending: true })
     .limit(20000);
   if (error) throw new ApiError(500, 'SYS.DB', error.message);
@@ -81,6 +83,7 @@ async function fetchLedger(): Promise<LedgerRow[]> {
     id: String(r.id),
     product_id: String(r.product_id),
     warehouse_id: String(r.warehouse_id ?? ''),
+    color_code: String(r.color_code ?? ''),
     quantity: toNum(r.quantity),
     balance: toNum(r.balance),
     ref_no: (r.ref_no as string | null) ?? null,
@@ -249,8 +252,8 @@ export async function runIntegrityChecks(group: CheckGroup): Promise<RunResult> 
 
   const specs: Array<{ key: string; name: string; run: () => ReturnType<typeof evalQuantityState> }> = [
     { key: 'quantity_state', name: '数量四态恒等（可用+锁定=现有，三态非负）', run: () => evalQuantityState(stocks) },
-    { key: 'batch_closure', name: '批次成本卡结存恒等（Σ批次余量=库存余额）', run: () => evalBatchClosure(stocks, batches) },
-    { key: 'ledger_conservation', name: '台账守恒（prev.balance+chg=balance 且链末=库存）', run: () => evalLedgerConservation(ledger, stocks) },
+    { key: 'batch_closure', name: '批次成本卡结存恒等（Σ批次余量=库存余额，按商品×仓×色号）', run: () => evalBatchClosure(stocks, batches) },
+    { key: 'ledger_conservation', name: '台账守恒（prev.balance+chg=balance 且链末=库存，按商品×仓×色号）', run: () => evalLedgerConservation(ledger, stocks) },
     { key: 'doc_no_unique', name: '业务单号全局唯一', run: () => evalDocNoUnique(docNos) },
     { key: 'voucher_balance', name: '凭证借贷平衡', run: () => evalVoucherBalance(vouchers.heads, vouchers.lines) },
     { key: 'arap_recon', name: '应收应付对账（单据-已核销-已退 非负闭合）', run: () => evalArApRecon(arap) },
