@@ -51,7 +51,7 @@
 | 系统模块 | `sys_*` | 用户、凭证、会话、角色权限 |
 | 基础资料模块 | `md_*` | 客户、供应商、商品主数据 |
 | 采购模块（已交付 V2） | `po_*` | 五单主链路：申请单(审批)→订单(审批)→入库单(暂估/冲回)→退货单；四级审批引擎；入库即库存+移动加权成本 |
-| 销售模块（已交付 V2） | `so_*` | 三单主链路：订单(审批+等级价格)→出库单(数量强校验+成本结转)→退货单(红字回补)；应收联动 |
+| 销售模块（已交付 V2 + 0023 闭环） | `so_*` | 三单主链路：订单(审批+等级价格)→出库单(数量强校验+成本结转)→退货单(红字回补)；应收联动；0023 补：价格策略三档阶梯取优 + 报价单(QO 状态机+转订单) + 客户信用(额度校验/强制通过审计/看板) |
 | 库存模块（已交付 V2） | `inv_*` | 多仓台账（现有/在途/冻结/可用）+ 批次 FIFO + 只追加台账 + 调拨单(IT)双边单事务 + 盘点单(IC)差异过账 + 安全库存预警 |
 | 财务模块（已交付，含应收应付核销） | `fin_*` | 应收/应付欠款汇总 + 收付款单（登记超额拦截 + plpgsql 核销/冲销）+ 应收/应付单物化 + 流水台账 + 科目/凭证/期末结账/费用报销/银行对账/现金流量表 + 固定资产卡片与折旧处置 |
 | 报表模块（周边，V1） | `report_*`（无独立表，SDK 只读聚合） | 经营统计：汇总卡片/采购/销售/库存报表，dashboard 趋势图 |
@@ -113,7 +113,7 @@
 | POST | /api/po/returns/[id]/submit、approve、reject | po.write / po.approve | 退货单审批（终审通过=出库，库存不足整单 400） |
 | GET/POST | /api/so/orders | so.read / so.write | 销售订单分页列表（status 筛选）/ 新建（草稿） |
 | GET/PUT/DELETE | /api/so/orders/[id] | so.read / so.write | 订单详情（含明细+审批步骤）/ 更新（draft/rejected）/ 删除（仅 draft） |
-| POST | /api/so/orders/[id]/submit | so.write | 提交审批（draft/rejected→pending，按金额定级） |
+| POST | /api/so/orders/[id]/submit | so.write | 提交审批（draft/rejected→pending，按金额定级；0023 起确认前信用校验，CREDIT.EXCEEDED 可 force_reason 强制通过） |
 | POST | /api/so/orders/[id]/approve、reject | so.approve | 审批通过当前步 / 驳回（→rejected） |
 | POST | /api/so/orders/[id]/cancel | so.write | 关闭订单（draft/pending/rejected→closed） |
 | POST | /api/so/orders/[id]/complete | so.write | 一键发货出库（approved→shipped，自动生成并审核出库单 SH，防重复出库） |
@@ -124,6 +124,18 @@
 | GET/POST | /api/so/returns | so.read / so.write | 退货单列表 / 新建（SR 单号，订单须 approved/shipped） |
 | GET/DELETE | /api/so/returns/[id] | so.read / so.write | 退货单详情 / 删除（draft/rejected） |
 | POST | /api/so/returns/[id]/submit、approve、reject | so.write / so.approve | 退货单审批（终审=红字回补库存/成本，超已出库量整单 400） |
+| GET/POST | /api/sales/prices | so.read / so.write | 价格策略分页列表（scope_type/status/keyword）/ 新建（三档作用对象互斥 400，阶梯≥1 行） |
+| GET/PUT/DELETE | /api/sales/prices/[id] | so.read / so.write | 策略详情（含阶梯）/ 更新（阶梯全量替换）/ 删除 |
+| GET | /api/sales/price/resolve | so.read | 售价试算：customer_id+product_id+quantity → 三档取优+阶梯档（含 reason/tier） |
+| GET/POST | /api/sales/quotes | so.read / so.write | 报价单分页列表（status/customer_id/date_from/date_to/keyword）/ 新建草稿（QO 单号，金额服务端重算） |
+| GET/PUT/DELETE | /api/sales/quotes/[id] | so.read / so.write | 报价详情（含明细）/ 更新（仅 draft）/ 删除（仅 draft） |
+| POST | /api/sales/quotes/[id]/submit | so.write | 提交（draft→sent） |
+| POST | /api/sales/quotes/[id]/accept | so.write | 客户接受（sent→accepted） |
+| POST | /api/sales/quotes/[id]/void | so.write | 作废 {reason}（draft/sent/accepted/expired→void，作废后不可转单 SO.QUOTE_VOID） |
+| POST | /api/sales/quotes/[id]/convert | so.write | 转销售订单 {force_reason?}（sent/accepted→converted，生成 draft 订单并双向回写 quote_id/converted_order_id；信用超限 400 CREDIT.EXCEEDED，so.approve 可强制通过落审计） |
+| GET | /api/sales/quotes/export | so.read | 报价单 CSV 导出（同列表过滤参数） |
+| GET | /api/sales/credit | so.read | 客户信用看板（keyword；额度/应收未结/在途占用/可用/逾期金额/最长逾期天数/绿黄红） |
+| GET | /api/sales/credit/[customerId] | so.read | 信用下钻：summary + bills 应收未结明细（到期日/逾期天数） |
 | GET | /api/inv/stock | inv.read | 库存余额分页（商品名/编码 keyword、warehouse_id 仓过滤） |
 | POST | /api/inv/stock/freeze | inv.write | 冻结量调整（正负增量，超额 400） |
 | GET | /api/inv/movements | inv.read | 台账流水分页（type=in/out/adjust、商品/单号 keyword、warehouse_id） |
@@ -421,6 +433,13 @@
 - **单号**：SO/SH/SR + `yyyymmdd-NNNN`；shipment 单号也可由 `so_fulfill_order` 在库内生成。
 - **前端**：`/sales/orders`（列表+new+[id]，详情含审批面板/发货出库/建出库单/建退货单入口）、`/sales/shipments`、`/sales/returns`（均列表+new+[id]）；订单编辑器选客户+商品后自动调 quote 预填建议价；ApprovalPanel DOC_PATH 已含销售三种 docType。
 
+### 销售闭环约定（0023：价格体系/报价单/客户信用）
+
+- **价格体系**：`so_price_strategies`（scope_type=customer_sku 客户+SKU 专属 / customer_level 客户等级 / global 全局默认，CHECK 三档作用对象互斥；effective_from/to 生效期；status active/disabled）+ `so_price_tiers`（strategy_id FK cascade；unit 片/箱/㎡ + min_qty + unit_price，无顶层基础价——价格全部由阶梯承载，至少 1 行）。取价 `prices.ts#resolvePrice`：优先级 customer_sku > customer_level > global；同级取 active 且生效期内（from≤today 且 to 空/≥today）**effective_from 最新**一条；命中后按商品单位匹配阶梯，**满足数量（min_qty≤qty）的档中取最低档价**（价格最低者），全不满足取 min_qty 最小档兜底；三档皆空回退 `md_products.reference_sale_price`（hit=false）。
+- **报价单**：`so_quotes`（QO 单号；状态机 draft→sent→accepted→converted，任意非 converted/void 可 void；converted_order_id FK 回写）+ `so_quote_items`（color_code 默认 '' 沿用 resolveItemColors 校验；amount=quantity×unit_price×discount_rate/100 服务端重算）。转订单 `convertQuote`：仅 sent/accepted、防重复转换（converted_order_id 非空 400）→ **信用校验** → 调既有 `createOrder` 生成 draft 订单（行价=折后单价）→ 回写 `so_sales_orders.quote_id` + 报价单 converted_*，乐观锁防并发。导出 `/api/sales/quotes/export`（CSV）。
+- **客户信用**：`md_customers` + `credit_limit`（0=不启用管控）/`credit_days`；`so_sales_orders` + `quote_id`。口径（`credit.ts#customerCreditUsage`）：应收未结=Σ(shipped/completed 订单)−Σ(approved 退货)−Σ(approved 收款)，在途占用=Σ(status=approved 订单总额)；可用=额度−（应收+占用）。**两个校验点**：报价 convert + 订单 submit（确认）；超限 400 `CREDIT.EXCEEDED`；具 `so.approve` 权限者带 force_reason 强制通过 → `writeAuditLog(action='credit.override')`。看板 `creditBoard`：使用率≥80% 黄、逾期>0 或 available<0 红；逾期=应收单 order_date+credit_days<今天且未结清。前端 `/sales/credit` 看板（行展开下钻应收明细）、`/sales/quotes`（列表+new+[id]）、`/sales/prices`（策略管理+试算器）；客户表单加信用字段；ApprovalPanel 捕获 CREDIT.EXCEEDED 弹强制通过原因框。
+- **验证**：`scripts/sales-closure-smoke.py` 67 项（三档取优/同级最新/阶梯最低档价/兜底、互斥 400、报价 CRUD/状态机/转订单双向回写/重复转单拦截/作废不可转、超限拦截/staff 强制 403/manager 强制通过+审计落库、看板/下钻、CSV 导出、权限 401/403、三页面 200）。
+
 ### 报表模块约定（report_*，周边 V1，纯只读聚合）
 
 - **无独立表**：报表为只读实时聚合（SDK-only，不建表/视图/物化），满足"不用真实时序、SQL 聚合即可"的应用场景。数据源：`po_purchase_orders`(status=received)、`so_sales_orders`(status=shipped)、`so_shipments`(status=approved 的出库成本)、`inv_stock`(跨仓数量×avg_cost)、`fin_*`(应收应付口径同财务模块)。
@@ -501,7 +520,7 @@ src/
 │   └── finance/                 # 财务通用：欠款汇总列表(kind 区分应收应付) / 收付款登记对话框 / 凭证/税务页面组件
 ├── lib/                     # api-client / types / use-paged-list(支持 filters)
 └── storage/database/        # supabase-client.ts + shared/schema.ts
-db/migrations/               # 版本化 SQL（0001 基础+认证 / 0002 采购 / 0003 销售 / 0004 库存 / 0005 财务 / 0006 采购 V2 五单+审批+成本+冲回 / 0007 销售 V2 出库+退货+等级报价 / 0008 库存 V2 多仓+批次+调拨+盘点+预警 / 0009 周边：系统字典 dict_* + 计量单位 md_units / 0010 财务 V2 应收应付核销 / 0011 财务凭证引擎+税务 / 0012 加工 ma_* / 0013 成本结转凭证 / 0014 PDA 移动端零迁移 / 0015 会计科目 fin_subjects/凭证手工记账 / 0016 期末结账：fin_accounting_periods 期间状态表(open/closed/annual_closed+locked+结转损益凭证号+结账/反结账留痕) + fin_period_logs 留痕日志表(仅INSERT) + 本年利润4103/未分配利润4104/所得税费用6402/税金及附加6403 种子 / 0017 费用报销 fin_expense_claims(+items)+ 银行对账单 fin_bank_statements + 其他应付款2241 种子 + expense 审批规则 / 0018 固定资产 fin_fixed_assets + 折旧记录 fin_depreciation_records(UNIQUE(asset_id,period)) + 6301/6711 种子 + fin_vouchers.event_id 扩宽 36→64 / 0019 税务增强：tax_invoices 发票台账(UNIQUE(direction,invoice_no)) + tax_prepaid 异地预缴 + tax_soc_diff 税会差异 / 0020 系统管理：sys_roles + sys_role_permissions + sys_user_roles + sys_settings + sys_audit_logs(只追加触发器) + sys_users.dept / 0021 数据一致性断言 sys_integrity_checks + 系统备份 sys_backups / 0022 色号全链路：md_product_colors 色号档案 + 14 表 color_code/color_name + inv_stock/inv_batches 唯一约束含色号 + 15 个 plpgsql 函数色号化重写）
+db/migrations/               # 版本化 SQL（0001 基础+认证 / 0002 采购 / 0003 销售 / 0004 库存 / 0005 财务 / 0006 采购 V2 五单+审批+成本+冲回 / 0007 销售 V2 出库+退货+等级报价 / 0008 库存 V2 多仓+批次+调拨+盘点+预警 / 0009 周边：系统字典 dict_* + 计量单位 md_units / 0010 财务 V2 应收应付核销 / 0011 财务凭证引擎+税务 / 0012 加工 ma_* / 0013 成本结转凭证 / 0014 PDA 移动端零迁移 / 0015 会计科目 fin_subjects/凭证手工记账 / 0016 期末结账：fin_accounting_periods 期间状态表(open/closed/annual_closed+locked+结转损益凭证号+结账/反结账留痕) + fin_period_logs 留痕日志表(仅INSERT) + 本年利润4103/未分配利润4104/所得税费用6402/税金及附加6403 种子 / 0017 费用报销 fin_expense_claims(+items)+ 银行对账单 fin_bank_statements + 其他应付款2241 种子 + expense 审批规则 / 0018 固定资产 fin_fixed_assets + 折旧记录 fin_depreciation_records(UNIQUE(asset_id,period)) + 6301/6711 种子 + fin_vouchers.event_id 扩宽 36→64 / 0019 税务增强：tax_invoices 发票台账(UNIQUE(direction,invoice_no)) + tax_prepaid 异地预缴 + tax_soc_diff 税会差异 / 0020 系统管理：sys_roles + sys_role_permissions + sys_user_roles + sys_settings + sys_audit_logs(只追加触发器) + sys_users.dept / 0021 数据一致性断言 sys_integrity_checks + 系统备份 sys_backups / 0022 色号全链路：md_product_colors 色号档案 + 14 表 color_code/color_name + inv_stock/inv_batches 唯一约束含色号 + 15 个 plpgsql 函数色号化重写 / 0023 销售闭环：so_price_strategies+so_price_tiers 阶梯价 + so_quotes+so_quote_items 报价单 + md_customers.credit_limit/credit_days + so_sales_orders.quote_id）
 scripts/seed-dev.ts          # DEV 测试账号种子
 ```
 
@@ -511,7 +530,7 @@ scripts/seed-dev.ts          # DEV 测试账号种子
 - curl 直接发**未百分号编码的非 ASCII query**（如 `?keyword=冒烟`）会被 Node HTTP 层以 400 空响应拒绝（非业务错误）；冒烟用 ASCII 关键字（如单号），中文模糊搜索由浏览器自动编码，不影响前端使用。
 - 超长、含多层嵌套引号的 shell 在 test_run 中转义易被破坏；复杂全链路（登录→建资料→建单→确认→出入库→断言）用自包含 Python 脚本（`urllib` + `http.cookiejar.CookieJar`，TS 后缀避免单号/编码冲突）驱动，打印 `XXX_SMOKE_OK` 收口。
 - completed 单据不可删除且外键引用客户/供应商/商品，库存流水只追加，故冒烟产生的主数据与库存数据保留在 DEV 库（业务断言通过即可），不要在脚本末尾强删。
-- 既有冒烟脚本清单：`scripts/integrity-backup-smoke.py`（57 项，0021）、`scripts/color-chain-smoke.py`（54 项，0022 色号全链路：色号档案 CRUD/采购带色号入库分列/销售带色号出库不串色/存量 '' 兼容/权限/页面/断言）；golden 195 条（`pnpm tsx scripts/ledger-golden.ts`）。
+- 既有冒烟脚本清单：`scripts/integrity-backup-smoke.py`（57 项，0021）、`scripts/color-chain-smoke.py`（54 项，0022 色号全链路：色号档案 CRUD/采购带色号入库分列/销售带色号出库不串色/存量 '' 兼容/权限/页面/断言）、`scripts/sales-closure-smoke.py`（67 项，0023 销售闭环：三档取价/报价单状态机/转订单/信用拦截与强制通过/看板）；golden 195 条（`pnpm tsx scripts/ledger-golden.ts`）。
 
 ## 包管理规范
 

@@ -26,8 +26,124 @@ export interface Customer {
   tax_no: string | null;
   status: string;
   remark: string | null;
+  /** 信用额度（0=不启用信用管控） */
+  credit_limit?: number;
+  /** 信用账期（天，0=不计算逾期） */
+  credit_days?: number;
   created_at: string;
   updated_at: string;
+}
+
+// ---------------------------------------------------------------------------
+// 销售闭环（0023）：价格策略 / 报价单 / 客户信用
+// ---------------------------------------------------------------------------
+
+export interface PriceStrategy {
+  id: string;
+  scope_type: 'customer_sku' | 'customer_level' | 'global';
+  customer_id: string | null;
+  customer_name: string | null;
+  customer_level: string | null;
+  product_id: string | null;
+  product_name: string | null;
+  product_sku: string | null;
+  effective_from: string;
+  effective_to: string | null;
+  status: string;
+  remark: string | null;
+  created_by_name: string | null;
+  created_at: string;
+  tiers: Array<{ unit: string; min_qty: number; unit_price: number }>;
+}
+
+export interface PriceResolveResult {
+  hit: boolean;
+  unit_price: number;
+  strategy_id: string | null;
+  scope_type: 'customer_sku' | 'customer_level' | 'global' | null;
+  tier: { unit: string; min_qty: number; unit_price: number } | null;
+  reason: string;
+}
+
+export interface QuoteItem {
+  id: string;
+  product_id: string;
+  product_name: string | null;
+  product_sku: string | null;
+  product_spec: string | null;
+  color_code: string;
+  color_name: string | null;
+  quantity: number;
+  unit: string | null;
+  unit_price: number;
+  discount_rate: number;
+  amount: number;
+  tax_rate: number;
+}
+
+export interface Quote {
+  id: string;
+  quote_no: string;
+  customer_id: string;
+  customer_name: string | null;
+  customer_level: string | null;
+  quote_date: string;
+  valid_until: string | null;
+  salesman: string | null;
+  status: string;
+  total_amount: number;
+  remark: string | null;
+  converted_order_id: string | null;
+  converted_order_no: string | null;
+  converted_at: string | null;
+  void_reason: string | null;
+  created_by_name: string | null;
+  item_count: number;
+  created_at: string;
+  items?: QuoteItem[];
+}
+
+export interface CreditBoardRow {
+  customer_id: string;
+  code: string;
+  name: string;
+  level: string | null;
+  credit_limit: number;
+  credit_days: number;
+  enabled: boolean;
+  ar_outstanding: number;
+  order_hold: number;
+  used: number;
+  available: number;
+  usage_rate: number | null;
+  overdue_amount: number;
+  overdue_max_days: number;
+  status: 'green' | 'yellow' | 'red';
+}
+
+export interface CreditBill {
+  bill_no: string;
+  order_id: string;
+  bill_date: string;
+  amount: number;
+  settled: number;
+  outstanding: number;
+  due_date: string | null;
+  overdue_days: number;
+}
+
+export interface CreditDetail {
+  summary: {
+    customer_id: string;
+    credit_limit: number;
+    credit_days: number;
+    ar_outstanding: number;
+    order_hold: number;
+    used: number;
+    available: number;
+    enabled: boolean;
+  };
+  bills: CreditBill[];
 }
 
 export interface Supplier {

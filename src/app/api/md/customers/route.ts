@@ -17,6 +17,10 @@ const createSchema = z.object({
   tax_no: z.string().trim().max(64).nullish(),
   status: z.enum(['active', 'disabled']).optional(),
   remark: z.string().max(2000).nullish(),
+  /** 信用额度（0=不启用信用管控） */
+  credit_limit: z.number().min(0, '信用额度不能为负').max(99_999_999_999, '信用额度超出范围').nullish(),
+  /** 信用账期（天，0=不计算逾期） */
+  credit_days: z.number().int('信用账期须为整数').min(0, '信用账期不能为负').max(3650, '信用账期超出范围').nullish(),
 });
 
 export async function GET(request: NextRequest) {

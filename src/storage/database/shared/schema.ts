@@ -117,6 +117,10 @@ export const mdCustomers = pgTable(
     level: varchar("level", { length: 32 }).notNull().default("normal"),
     tax_no: varchar("tax_no", { length: 64 }),
     status: varchar("status", { length: 20 }).notNull().default("active"),
+    /** 信用额度（0023；0=不启用信用管控） */
+    credit_limit: numeric("credit_limit", { precision: 14, scale: 2 }).notNull().default("0"),
+    /** 信用账期天数（0023；0=不启用逾期判定） */
+    credit_days: integer("credit_days").notNull().default(0),
     remark: text("remark"),
     created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     updated_at: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
@@ -338,6 +342,8 @@ export const soSalesOrders = pgTable(
     approved_at: timestamp("approved_at", { withTimezone: true }),
     reject_reason: text("reject_reason"),
     remark: text("remark"),
+    /** 来源报价单（0023；报价转订单时回写） */
+    quote_id: varchar("quote_id", { length: 36 }),
     created_by: varchar("created_by", { length: 36 }).references(() => sysUsers.id),
     confirmed_at: timestamp("confirmed_at", { withTimezone: true }),
     cancelled_at: timestamp("cancelled_at", { withTimezone: true }),
@@ -349,6 +355,114 @@ export const soSalesOrders = pgTable(
     index("so_orders_status_idx").on(table.status),
     index("so_orders_order_date_idx").on(table.order_date),
     index("so_orders_created_at_idx").on(table.created_at),
+  ],
+);
+
+// ============================================================
+// 销售闭环补全（0023）：价格策略 / 阶梯价 / 报价单
+// ============================================================
+
+/** 价格策略（作用对象：customer_sku 客户+SKU 专属 / customer_level 客户等级 / global 全局默认） */
+export const soPriceStrategies = pgTable(
+  "so_price_strategies",
+  {
+    id: varchar("id", { length: 36 }).primaryKey().default(sql`gen_random_uuid()`),
+    scope_type: varchar("scope_type", { length: 20 }).notNull(),
+    customer_id: varchar("customer_id", { length: 36 }).references(() => mdCustomers.id),
+    product_id: varchar("product_id", { length: 36 }).references(() => mdProducts.id),
+    customer_level: varchar("customer_level", { length: 32 }),
+    effective_from: date("effective_from", { mode: "string" }).notNull(),
+    /** 空 = 长期有效 */
+    effective_to: date("effective_to", { mode: "string" }),
+    status: varchar("status", { length: 16 }).notNull().default("active"),
+    remark: text("remark"),
+    created_by: varchar("created_by", { length: 36 }),
+    created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updated_at: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index("idx_price_strategies_scope").on(table.scope_type, table.status),
+    index("idx_price_strategies_cust").on(table.customer_id),
+    index("idx_price_strategies_prod").on(table.product_id),
+    index("idx_price_strategies_level").on(table.customer_level),
+  ],
+);
+
+/** 价格阶梯明细（min_qty → unit_price，按单位分套） */
+export const soPriceTiers = pgTable(
+  "so_price_tiers",
+  {
+    id: varchar("id", { length: 36 }).primaryKey().default(sql`gen_random_uuid()`),
+    strategy_id: varchar("strategy_id", { length: 36 })
+      .notNull()
+      .references(() => soPriceStrategies.id, { onDelete: "cascade" }),
+    unit: varchar("unit", { length: 16 }).notNull().default("片"),
+    min_qty: numeric("min_qty", { precision: 12, scale: 3 }).notNull(),
+    unit_price: numeric("unit_price", { precision: 12, scale: 2 }).notNull(),
+    created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [index("idx_price_tiers_strategy").on(table.strategy_id, table.unit, table.min_qty)],
+);
+
+/** 报价单（头） */
+export const soQuotes = pgTable(
+  "so_quotes",
+  {
+    id: varchar("id", { length: 36 }).primaryKey().default(sql`gen_random_uuid()`),
+    /** 报价单号：QOyyyymmdd-NNNN */
+    quote_no: varchar("quote_no", { length: 32 }).notNull().unique(),
+    customer_id: varchar("customer_id", { length: 36 })
+      .notNull()
+      .references(() => mdCustomers.id),
+    quote_date: date("quote_date", { mode: "string" }).notNull(),
+    valid_until: date("valid_until", { mode: "string" }),
+    salesman: varchar("salesman", { length: 64 }),
+    /** draft → sent → accepted → converted；非终态 → void；过期人工标记 expired */
+    status: varchar("status", { length: 16 }).notNull().default("draft"),
+    total_amount: numeric("total_amount", { precision: 14, scale: 2 }).notNull().default("0"),
+    remark: text("remark"),
+    converted_order_id: varchar("converted_order_id", { length: 36 }).references(() => soSalesOrders.id),
+    converted_at: timestamp("converted_at", { withTimezone: true }),
+    sent_at: timestamp("sent_at", { withTimezone: true }),
+    accepted_at: timestamp("accepted_at", { withTimezone: true }),
+    void_reason: text("void_reason"),
+    created_by: varchar("created_by", { length: 36 }),
+    created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updated_at: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index("idx_so_quotes_customer").on(table.customer_id),
+    index("idx_so_quotes_status").on(table.status),
+    index("idx_so_quotes_date").on(table.quote_date),
+  ],
+);
+
+/** 报价单明细行 */
+export const soQuoteItems = pgTable(
+  "so_quote_items",
+  {
+    id: varchar("id", { length: 36 }).primaryKey().default(sql`gen_random_uuid()`),
+    quote_id: varchar("quote_id", { length: 36 })
+      .notNull()
+      .references(() => soQuotes.id, { onDelete: "cascade" }),
+    product_id: varchar("product_id", { length: 36 })
+      .notNull()
+      .references(() => mdProducts.id),
+    color_code: varchar("color_code", { length: 32 }).notNull().default(""),
+    color_name: varchar("color_name", { length: 64 }),
+    quantity: numeric("quantity", { precision: 12, scale: 3 }).notNull(),
+    unit: varchar("unit", { length: 16 }),
+    /** 含税单价 */
+    unit_price: numeric("unit_price", { precision: 12, scale: 2 }).notNull(),
+    /** 折扣率 0-100（100=无折扣） */
+    discount_rate: numeric("discount_rate", { precision: 6, scale: 2 }).notNull().default("100"),
+    amount: numeric("amount", { precision: 14, scale: 2 }).notNull(),
+    tax_rate: numeric("tax_rate", { precision: 5, scale: 2 }).notNull().default("13"),
+    created_at: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index("idx_so_quote_items_quote").on(table.quote_id),
+    index("idx_so_quote_items_product").on(table.product_id),
   ],
 );
 
@@ -1221,6 +1335,10 @@ export type MdUnit = typeof mdUnits.$inferSelect;
 export type SoShipmentItem = typeof soShipmentItems.$inferSelect;
 export type SoReturn = typeof soReturns.$inferSelect;
 export type SoReturnItem = typeof soReturnItems.$inferSelect;
+export type SoPriceStrategy = typeof soPriceStrategies.$inferSelect;
+export type SoPriceTier = typeof soPriceTiers.$inferSelect;
+export type SoQuote = typeof soQuotes.$inferSelect;
+export type SoQuoteItem = typeof soQuoteItems.$inferSelect;
 
 // ============================================================
 // fin_ 财务凭证引擎：模板 + 凭证 + 分录（0011）

@@ -42,6 +42,8 @@ const EMPTY = {
   level: 'normal',
   tax_no: '',
   status: 'active',
+  credit_limit: '',
+  credit_days: '',
   remark: '',
 };
 
@@ -62,6 +64,8 @@ export function CustomerFormDialog({ open, onOpenChange, initial, onSaved }: Cus
         level: initial.level,
         tax_no: initial.tax_no ?? '',
         status: initial.status,
+        credit_limit: initial.credit_limit ? String(initial.credit_limit) : '',
+        credit_days: initial.credit_days ? String(initial.credit_days) : '',
         remark: initial.remark ?? '',
       });
     } else {
@@ -77,7 +81,19 @@ export function CustomerFormDialog({ open, onOpenChange, initial, onSaved }: Cus
     event.preventDefault();
     setSaving(true);
     try {
-      const body = JSON.stringify(form);
+      const creditLimit = form.credit_limit.trim() === '' ? 0 : Number(form.credit_limit);
+      const creditDays = form.credit_days.trim() === '' ? 0 : Number(form.credit_days);
+      if (!Number.isFinite(creditLimit) || creditLimit < 0) {
+        toast.error('信用额度须为不小于 0 的数字');
+        setSaving(false);
+        return;
+      }
+      if (!Number.isInteger(creditDays) || creditDays < 0) {
+        toast.error('信用账期须为不小于 0 的整数');
+        setSaving(false);
+        return;
+      }
+      const body = JSON.stringify({ ...form, credit_limit: creditLimit, credit_days: creditDays });
       if (initial) {
         await apiFetch(`/api/md/customers/${initial.id}`, { method: 'PUT', body });
         toast.success('客户已更新');
@@ -151,6 +167,30 @@ export function CustomerFormDialog({ open, onOpenChange, initial, onSaved }: Cus
                   <SelectItem value="disabled">停用</SelectItem>
                 </SelectContent>
               </Select>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="c-credit-limit">信用额度（元）</Label>
+              <Input
+                id="c-credit-limit"
+                type="number"
+                min={0}
+                step="0.01"
+                value={form.credit_limit}
+                onChange={(e) => set('credit_limit')(e.target.value)}
+                placeholder="0 = 不启用信用管控"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="c-credit-days">信用账期（天）</Label>
+              <Input
+                id="c-credit-days"
+                type="number"
+                min={0}
+                step={1}
+                value={form.credit_days}
+                onChange={(e) => set('credit_days')(e.target.value)}
+                placeholder="0 = 不计算逾期"
+              />
             </div>
           </div>
           <div className="space-y-2">

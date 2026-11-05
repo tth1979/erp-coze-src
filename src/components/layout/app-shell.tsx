@@ -104,6 +104,9 @@ const NAV: NavGroup[] = [
   {
     group: '销售管理',
     items: [
+      { title: '报价单', href: '/sales/quotes', icon: FileSignature, permission: 'so.read' },
+      { title: '价格策略', href: '/sales/prices', icon: Tags, permission: 'so.read' },
+      { title: '客户信用看板', href: '/sales/credit', icon: BellRing, permission: 'so.read' },
       { title: '销售订单', href: '/sales/orders', icon: Receipt, permission: 'so.read' },
       { title: '销售出库单', href: '/sales/shipments', icon: PackageOpen, permission: 'so.read' },
       { title: '销售退货单', href: '/sales/returns', icon: RotateCcw, permission: 'so.read' },

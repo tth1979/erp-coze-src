@@ -61,6 +61,8 @@ export interface SalesOrderView {
   cancelled_at: string | null;
   /** 发货仓库（可空，空=默认仓 WH01） */
   warehouse_id: string | null;
+  /** 来源报价单（报价转订单时回写，0023） */
+  quote_id: string | null;
   created_at: string;
   updated_at: string;
   items?: SalesOrderItemView[];
@@ -138,6 +140,7 @@ function serialize(
     confirmed_at: row.confirmed_at ? new Date(row.confirmed_at).toISOString() : null,
     cancelled_at: row.cancelled_at ? new Date(row.cancelled_at).toISOString() : null,
     warehouse_id: row.warehouse_id ?? null,
+    quote_id: row.quote_id ?? null,
     created_at: new Date(row.created_at).toISOString(),
     updated_at: new Date(row.updated_at).toISOString(),
     items: extra.items,
@@ -461,9 +464,24 @@ export async function deleteOrder(id: string): Promise<void> {
 // 状态流转（审批引擎驱动）
 // ---------------------------------------------------------------------------
 
-/** 提交审批：draft/rejected → pending（按金额命中审批级别） */
-export async function submitOrder(id: string, user: SysUser): Promise<SalesOrderView> {
+/** 提交审批：draft/rejected → pending（按金额命中审批级别）；确认前做客户信用校验（CREDIT.EXCEEDED 阻断，可强制通过落审计） */
+export async function submitOrder(
+  id: string,
+  user: SysUser,
+  options?: { forceReason?: string | null; permissions?: string[]; ip?: string | null },
+): Promise<SalesOrderView> {
   const order = await getOrder(id);
+  if (['draft', 'rejected'].includes(order.status)) {
+    const { assertCreditAvailable } = await import('./credit');
+    await assertCreditAvailable(order.customer_id, order.total_amount, {
+      scene: 'order_submit',
+      docId: id,
+      docNo: order.order_no,
+      forceReason: options?.forceReason,
+      operator: { id: user.id, username: user.username, permissions: options?.permissions },
+      ip: options?.ip,
+    });
+  }
   await submitDocument('sales_order', id, order.total_amount, user);
   return getOrder(id);
 }

@@ -535,7 +535,7 @@ export default function RolesPage() {
               onChange={(e) => setDeptDialog((prev) => (prev ? { ...prev, dept: e.target.value } : prev))}
               placeholder="如 销售一部"
             />
-            <p className="text-xs text-muted-foreground">数据范围为"本部门"的角色按此归属过滤单据</p>
+            <p className="text-xs text-muted-foreground">数据范围为「本部门」的角色按此归属过滤单据</p>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setDeptDialog(null)}>取消</Button>

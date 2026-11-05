@@ -67,6 +67,10 @@ export function ApprovalPanel({
   const [rejectOpen, setRejectOpen] = useState(false);
   const [reason, setReason] = useState('');
   const [acting, setActing] = useState(false);
+  // 信用超限强制通过（仅销售订单提交时可能触发 CREDIT.EXCEEDED）
+  const [creditOpen, setCreditOpen] = useState(false);
+  const [creditMessage, setCreditMessage] = useState('');
+  const [creditReason, setCreditReason] = useState('');
   const base = `${API_BASE[docType]}/${docId}`;
 
   async function act(action: 'submit' | 'approve' | 'reject', body?: object) {
@@ -75,10 +79,17 @@ export function ApprovalPanel({
       await apiFetch(`${base}/${action}`, { method: 'POST', body: body ? JSON.stringify(body) : undefined });
       toast.success(action === 'submit' ? '已提交审批' : action === 'approve' ? '已通过' : '已驳回');
       setRejectOpen(false);
+      setCreditOpen(false);
       setReason('');
+      setCreditReason('');
       onChanged();
     } catch (error) {
-      toast.error(error instanceof ApiClientError ? error.message : '操作失败');
+      if (action === 'submit' && error instanceof ApiClientError && error.code === 'CREDIT.EXCEEDED') {
+        setCreditMessage(error.message);
+        setCreditOpen(true);
+      } else {
+        toast.error(error instanceof ApiClientError ? error.message : '操作失败');
+      }
     } finally {
       setActing(false);
       setSubmitting(false);
@@ -181,6 +192,33 @@ export function ApprovalPanel({
               onClick={() => void act('reject', { reason: reason.trim() })}
             >
               确认驳回
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 信用超限强制通过（服务端已按权限裁决，无权限者会收到 403） */}
+      <Dialog open={creditOpen} onOpenChange={setCreditOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>客户信用额度超限</DialogTitle>
+            <DialogDescription>{creditMessage}。如需继续提交，请填写强制通过原因（将写入审计日志）。</DialogDescription>
+          </DialogHeader>
+          <Input
+            value={creditReason}
+            onChange={(e) => setCreditReason(e.target.value)}
+            placeholder="强制通过原因（必填）"
+          />
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCreditOpen(false)}>
+              取消
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={acting || !creditReason.trim()}
+              onClick={() => void act('submit', { force: true, reason: creditReason.trim() })}
+            >
+              强制通过并提交
             </Button>
           </DialogFooter>
         </DialogContent>

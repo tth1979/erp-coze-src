@@ -16,6 +16,8 @@ const updateSchema = z.object({
   tax_no: z.string().trim().max(64).nullish(),
   status: z.enum(['active', 'disabled']).optional(),
   remark: z.string().max(2000).nullish(),
+  credit_limit: z.number().min(0, '信用额度不能为负').max(99_999_999_999, '信用额度超出范围').nullish(),
+  credit_days: z.number().int('信用账期须为整数').min(0, '信用账期不能为负').max(3650, '信用账期超出范围').nullish(),
 });
 
 type RouteContext = { params: Promise<{ id: string }> };

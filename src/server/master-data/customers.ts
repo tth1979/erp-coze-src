@@ -20,6 +20,10 @@ export interface CustomerInput {
   tax_no?: string | null;
   status?: string;
   remark?: string | null;
+  /** 信用额度（0=不启用信用管控） */
+  credit_limit?: number | null;
+  /** 信用账期（天，0=不计算逾期） */
+  credit_days?: number | null;
 }
 
 const TABLE = 'md_customers';
@@ -37,6 +41,8 @@ function normalize(input: CustomerInput) {
     tax_no: emptyToNull(input.tax_no),
     status: input.status ?? 'active',
     remark: emptyToNull(input.remark),
+    credit_limit: input.credit_limit ?? 0,
+    credit_days: input.credit_days ?? 0,
   };
 }
 
